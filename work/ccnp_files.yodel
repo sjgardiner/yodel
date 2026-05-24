@@ -85,10 +85,10 @@ runs:
   - id: CV
     description: Central-value prediction, including MicroBooNE Tune
     recipe:
-    - id: beam_off
+    - _id: beam_off
       source: beam_off
       scaling: triggers
-    - id: mc
+    - _id: mc
       source: [ numu, nue, dirt ]
       scaling: pot
       weight:
