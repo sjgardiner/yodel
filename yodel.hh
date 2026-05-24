@@ -57,11 +57,9 @@ namespace internal {
   inline const std::string OVERRIDES = "overrides";
   inline const std::string INSTANCE_FIELDS = "instance fields";
   inline const std::string OV_PER_INSTANCE = OVERRIDES + " per-instance";
-  inline const std::string SWAPS = "swaps";
   inline const std::string WHEN = "when";
   inline const std::string REPLACE = "replace";
   inline const std::string VALUE_FROM = "value from";
-  inline const std::string LITERAL_SWAPS = "_literal_" + SWAPS;
 
   // Index for managing YODEL object identities
   struct IdIndex {
@@ -154,15 +152,13 @@ namespace internal {
       // Overrides authored on templates, captured during Concretize
       // and applied later in Resolve (per instance canonical scope).
       struct OverridesForInstance {
-        // mapping form: field -> [overlays] (sequence)
-        ordered_node per_instance_map;
-        // sequence of {when, replace} rules
+        // sequence of {when, replace} rules (per-instance)
         ordered_node per_instance_seq;
-        // mapping applied to every instance
+        // template-level mapping applied to every instance
         ordered_node broadcast_map;
-        // final overlay computed from per_instance_seq for a given instance
+        // pre-computed conditional overlay from per_instance_seq
         ordered_node conditional_overlay;
-  
+
         inline bool has_any() const;
       };
 
@@ -179,32 +175,20 @@ namespace internal {
   
     // Processing stages
     ordered_node parse_and_preflight( const std::string& yaml_text );
-    void apply_section_overrides_in_place(); // operates on doc_
     void collect_index_and_concretize(); // operates on doc_ and session_
     void resolve_unified(); // operates on doc_ and session_
     void prune_final(); // operates on doc_
   
-    // Signals how context should be built internally by
-    // bind_strings_multi_pass(...) depending on the processing stage
-    enum class BinderMode { Concretize, Resolve };
-  
-    void bind_strings_multi_pass( ordered_node& obj, BinderMode mode );
+    void bind_strings_multi_pass( ordered_node& obj );
   
     // 'value from' materializer
     ordered_node materialize_value_from( const ordered_node& authored,
       const std::unordered_map< std::string, std::string >& bind_ctx,
-      const char* usage_label, std::optional<std::string> required_shape,
-      BinderMode mode );
-  
-    // Identity selection with policy (signals different behavior in
-    // Concretize/Resolve steps)
-    enum class IdentityPolicy { RequireLiteralInConcretize,
-      AllowBoundLocalsInResolve };
+      const char* usage_label, std::optional<std::string> required_shape );
   
     std::optional< std::string > element_identity_token(
       const ordered_node& el,
-      const std::unordered_map< std::string, std::string >& ctx,
-      IdentityPolicy policy );
+      const std::unordered_map< std::string, std::string >& ctx );
   
     void apply_sequence_overlays_by_id( ordered_node& base_seq,
       const ordered_node& overlay_map );
@@ -212,14 +196,6 @@ namespace internal {
     // Base resolver/merger
     void resolve_and_merge_base( ordered_node& target_map,
       const std::string& current_object_canon );
-  
-    // Swaps: bind map to literals, compose effective, shallow apply
-    std::unordered_map< std::string, std::string >
-      bind_swaps_map_to_literals( const ordered_node& swaps_map,
-        const std::unordered_map<std::string, std::string>& ctx );
-  
-    void apply_literal_swaps_shallow( ordered_node& node,
-      const std::unordered_map< std::string, std::string >& swaps );
   
     // Concretize uses params/local context only (intra-locals chaining)
     std::unordered_map< std::string, std::string >
@@ -490,30 +466,6 @@ namespace internal {
     return false;
   }
 
-  // Early literal identity for sequence elements: ID -> AUTO_ID -> LOCALS.ID 
-  // (string-only; no binding). This is used only for section-level overrides
-  // pre-expansion where we need to target by id without performing
-  // Concretize-time binding.
-  inline std::optional< std::string > early_literal_element_identity_token(
-    const ordered_node& el )
-  {
-    if ( !el.is_mapping() ) return std::nullopt;
-    if ( el.contains(ID) && el.at(ID).is_string() ) {
-      return to_native_checked< std::string >( el.at(ID) );
-    }
-    if ( el.contains(AUTO_ID) && el.at(AUTO_ID).is_string() ) {
-      return to_native_checked< std::string >( el.at(AUTO_ID) );
-    }
-    if ( el.contains(LOCALS) && el.at(LOCALS).is_mapping() &&
-      el.at(LOCALS).contains(ID) && el.at(LOCALS).at(ID).is_string() )
-    {
-      // locals.id must be literal here (no placeholders); we treat
-      // it as-is for section overrides.
-      return to_native_checked< std::string >( el.at(LOCALS).at(ID) );
-    }
-    return std::nullopt;
-  }
-
   // Provenance helper used by the Concretize step.
   // If a field was cloned from base, it will appear in _base_keys. When a
   // write overrides that field, we should remove the key from _base_keys.
@@ -633,7 +585,7 @@ namespace internal {
     // Meta keys to exclude when collecting inline defaults
     std::unordered_set< std::string > meta = {
       TEMPLATE_PARAMETERS, BASE, OVERRIDES, INSTANCE_FIELDS,
-      OV_PER_INSTANCE, LOCALS, SWAPS
+      OV_PER_INSTANCE, LOCALS
     };
 
     // Also exclude parameter arrays (names listed under template parameters)
@@ -831,7 +783,7 @@ namespace internal {
     // (skip meta and section containers)
     for ( const auto& [mk, mv] : doc.map_items() ) {
       const std::string k = mk.get_value< std::string >();
-      if ( k == OVERRIDES || k == SWAPS || k == LOCALS ) continue;
+      if ( k == OVERRIDES || k == LOCALS ) continue;
       if ( mv.is_mapping() && mapping_is_section_container(mv) ) continue;
       if ( mv.is_sequence() ) continue;
   
@@ -892,7 +844,7 @@ inline std::optional< std::string > yodel::internal
   return std::nullopt;
 }
 
-// Unqualified tokens: single symbol, sibling-first ladder with rung-local ambiguity
+// Unqualified tokens: single symbol, parent-chain ladder (current -> parent -> ... -> root)
 inline std::string yodel::internal::IdIndex::resolve_via_ladder(
   const std::string& start_scope, const std::string& token ) const
 {
@@ -903,78 +855,18 @@ inline std::string yodel::internal::IdIndex::resolve_via_ladder(
     if ( it == table.end() ) return std::nullopt;
     auto it2 = it->second.find( token );
     if ( it2 == it->second.end() ) return std::nullopt;
-    return it2->second; // canonical identity
-  };
-
-  auto collect_hits = [&]( const std::vector< std::string >& scopes )
-    -> std::vector<std::string>
-  {
-    std::vector< std::string > out;
-    for ( const auto& s : scopes ) {
-      if ( auto h = find_in_bucket(s) ) out.push_back( *h );
-    }
-    return out;
+    return it2->second;
   };
 
   std::string cur = start_scope;
   while ( true ) {
-    // Rung 1: current scope
     if ( auto h = find_in_bucket(cur) ) return *h;
 
-    // Rung 2: current scope’s siblings
     std::string p = parent_of( cur );
-    if ( !p.empty() ) {
-      std::vector< std::string > sibs;
-      auto it = children.find( p );
-      if ( it != children.end() ) {
-        for ( const auto& child : it->second ) {
-          if ( child != cur ) sibs.push_back( child );
-        }
-      }
-      auto hits = collect_hits( sibs );
-      if ( hits.size() == 1 ) return hits.front();
-      if ( hits.size() > 1 ) {
-        std::ostringstream oss;
-        oss << "Ambiguous unqualified reference '" << token
-          << "' at siblings of scope '" << cur << "': ";
-        for ( size_t i = 0; i < hits.size(); ++i ) {
-          if ( i ) oss << ", ";
-          oss << hits[ i ];
-        }
-        throw std::runtime_error( oss.str() );
-      }
-    }
-
-    // Rung 3: parent scope
     if ( !p.empty() ) {
       if ( auto h = find_in_bucket(p) ) return *h;
     }
 
-    // Rung 4: parent’s siblings
-    std::string pp = parent_of( p );
-    if ( !pp.empty() ) {
-      std::vector< std::string > psibs;
-      auto it = children.find( pp );
-      if ( it != children.end() ) {
-        for ( const auto& child : it->second ) {
-          if ( child != p ) psibs.push_back( child );
-        }
-      }
-      auto hits = collect_hits( psibs );
-      if ( hits.size() == 1 ) return hits.front();
-      if ( hits.size() > 1 ) {
-        std::ostringstream oss;
-        oss << "Ambiguous unqualified reference '" << token
-          << "' at siblings of scope '" << p << "': ";
-        for ( std::size_t i = 0; i < hits.size(); ++i ) {
-          if ( i ) oss << ", ";
-          oss << hits[ i ];
-        }
-        throw std::runtime_error( oss.str() );
-      }
-    }
-
-    // Climb
     if ( cur.empty() || p.empty() ) break;
     cur = p;
   }
@@ -1020,83 +912,15 @@ inline std::string yodel::internal::IdIndex::resolve_partial_chain(
   const std::string& start_scope,
   const std::vector< std::string >& segs ) const
 {
-  auto collect_chain_hits = [&]( const std::vector< std::string >& bases )
-    -> std::vector< std::string >
-  {
-    std::vector< std::string > out;
-    for ( const auto& s : bases ) {
-      if ( auto h = try_chain_once(s, segs) ) out.push_back( *h );
-    }
-    return out;
-  };
-
   std::string cur = start_scope;
   while ( true ) {
-    // Rung 1: current scope
     if ( auto h = try_chain_once(cur, segs) ) return *h;
 
-    // Rung 2: current scope’s siblings
     std::string p = parent_of( cur );
-    if ( !p.empty() ) {
-      std::vector< std::string > sibs;
-      auto it = children.find( p );
-      if ( it != children.end() ) {
-        for ( const auto& child : it->second ) {
-          if ( child != cur ) sibs.push_back( child );
-        }
-      }
-      auto hits = collect_chain_hits( sibs );
-      if ( hits.size() == 1 ) return hits.front();
-      if ( hits.size() > 1 ) {
-        std::ostringstream oss;
-        oss << "Ambiguous partial reference '";
-        for ( size_t i = 0; i < segs.size(); ++i ) {
-          if ( i ) oss << PATH_DELIMITER;
-          oss << segs[ i ];
-        }
-        oss << "' at siblings of scope '" << cur << "': ";
-        for ( std::size_t i = 0; i < hits.size(); ++i ) {
-          if ( i ) oss << ", ";
-          oss << hits[ i ];
-        }
-        throw std::runtime_error( oss.str() );
-      }
-    }
-
-    // Rung 3: parent scope
     if ( !p.empty() ) {
       if ( auto h = try_chain_once(p, segs) ) return *h;
     }
 
-    // Rung 4: parent’s siblings
-    std::string pp = parent_of( p );
-    if ( !pp.empty() ) {
-      std::vector< std::string > psibs;
-      auto it = children.find( pp );
-      if ( it != children.end() ) {
-        for ( const auto& child : it->second ) {
-          if ( child != p ) psibs.push_back( child );
-        }
-      }
-      auto hits = collect_chain_hits( psibs );
-      if ( hits.size() == 1 ) return hits.front();
-      if ( hits.size() > 1 ) {
-        std::ostringstream oss;
-        oss << "Ambiguous partial reference '";
-        for ( size_t i = 0; i < segs.size(); ++i ) {
-          if ( i ) oss << PATH_DELIMITER;
-          oss << segs[ i ];
-        }
-        oss << "' at siblings of scope '" << p << "': ";
-        for ( size_t i = 0; i < hits.size(); ++i ) {
-          if ( i ) oss << ", ";
-          oss << hits[ i ];
-        }
-        throw std::runtime_error( oss.str() );
-      }
-    }
-
-    // Climb
     if ( cur.empty() || p.empty() ) break;
     cur = p;
   }
@@ -1116,8 +940,7 @@ inline std::string yodel::internal::IdIndex::resolve_partial_chain(
 inline bool yodel::Resolver::ResolveSession
   ::OverridesForInstance::has_any() const
 {
-  return ( per_instance_map.is_mapping() && per_instance_map.size() > 0) ||
-    ( per_instance_seq.is_sequence() && per_instance_seq.size() > 0) ||
+  return ( per_instance_seq.is_sequence() && per_instance_seq.size() > 0) ||
     ( broadcast_map.is_mapping() && broadcast_map.size() > 0) ||
     ( conditional_overlay.is_mapping() && conditional_overlay.size() > 0 );
 }
@@ -1145,18 +968,15 @@ inline yodel::ordered_node
   session_.path_stack.push_back( internal::DOC_ROOT );
   session_.scope_path = internal::DOC_ROOT;
 
-  // 1) Section-level overrides (pre-expansion)
-  this->apply_section_overrides_in_place();
-
-  // 2) Collect identities & Concretize (template expansion, provenance-gated
+  // 1) Collect identities & Concretize (template expansion, provenance-gated
   // defaults)
   this->collect_index_and_concretize();
 
-  // 3) Resolve (overrides, base merges, swaps, binding;
+  // 2) Resolve (overrides, base merges, binding;
   // update canonical identities)
   this->resolve_unified();
 
-  // 4) Final prune
+  // 3) Final prune
   this->prune_final();
 
   return doc_;
@@ -1220,135 +1040,13 @@ inline void yodel::Resolver::ctx_pop() {
   }
 }
 
-inline void yodel::Resolver::apply_section_overrides_in_place() {
-  using internal::OVERRIDES;
-  if ( !doc_.is_mapping() || !doc_.contains(OVERRIDES) ) return;
-  const ordered_node ov = doc_.at( OVERRIDES );
-  if ( !ov.is_mapping() ) return;
-
-  for ( const auto& [mk, mv] : ov.map_items() ) {
-    const std::string section = mk.get_value< std::string >();
-    if ( !doc_.contains(section) ) continue; // silently skip unknown sections
-
-    // Maintain path stack for error reporting. Note that we record
-    // the path stack size before pushing here.
-    const std::size_t parent_guard = session_.path_stack.size();
-    session_.path_stack.push_back( section );
-
-    ordered_node sec = doc_.at( section );
-
-    // Sequence-by-id form: target is a sequence and override value is a mapping
-    if ( sec.is_sequence() && mv.is_mapping() ) {
-
-      // Build overlay_by_id and set of required ids (single string keys only)
-      std::unordered_map< std::string, ordered_node > overlay_by_id;
-      std::unordered_set< std::string > required_ids;
-
-      for ( const auto& [ok, ovObj] : mv.map_items() ) {
-        const std::string id = ok.get_value< std::string >();
-        overlay_by_id.emplace( id, ovObj );
-        required_ids.insert( id );
-      }
-
-      // Merge into sequence elements by id; track which ids were resolved
-      std::unordered_set< std::string > resolved_ids;
-      std::vector< ordered_node > new_seq;
-      new_seq.reserve( sec.size() );
-
-      for ( std::size_t i = 0; i < sec.size(); ++i ) {
-        ordered_node el = sec.at( i );
-        if ( auto eid_opt
-          = internal::early_literal_element_identity_token(el) )
-        {
-          const std::string& eid = *eid_opt;
-          auto it = overlay_by_id.find( eid );
-          if ( it != overlay_by_id.end() ) {
-            el = internal::deep_merge( el, it->second );
-            resolved_ids.insert( eid );
-          }
-        }
-        new_seq.push_back( el );
-      }
-
-      // Strict unknown ids: any authored id not found in the sequence
-      for ( const auto& need : required_ids ) {
-        if ( !resolved_ids.count(need) ) {
-          // Collect available ids for diagnostics
-          std::vector< std::string > available;
-          for ( size_t si = 0; si < sec.size(); ++si ) {
-            const ordered_node el2 = sec.at( si );
-            if ( auto eid
-              = internal::early_literal_element_identity_token(el2) )
-            {
-              available.push_back( *eid );
-            }
-          }
-          std::ostringstream msg;
-          msg << "Section-level override targets unknown id '" << need
-            << "' for section '" << section << "'";
-          if ( !available.empty() ) {
-            msg << "; available: ";
-            for ( size_t i = 0; i < available.size(); ++i ) {
-              if ( i ) msg << ", ";
-              msg << available[ i ];
-            }
-          }
-          throw_error_at( msg.str() );
-        }
-      }
-
-      // Write back; order preserved
-      doc_[section] = internal::make_node_from( new_seq );
-
-      // Restore path stack
-      while ( session_.path_stack.size() > parent_guard ) {
-        session_.path_stack.pop_back();
-      }
-      continue;
-    }
-
-    // Mapping section: deep-merge keys; scalars/sequences replace; null clears
-    if ( sec.is_mapping() && mv.is_mapping() ) {
-      ordered_node new_sec = ordered_node::mapping();
-      for ( const auto& [ck, cv] : sec.map_items() ) {
-        const std::string childKey = ck.get_value< std::string >();
-        ordered_node childVal = cv;
-        if ( mv.contains(childKey) ) {
-          const ordered_node ovChild = mv.at( childKey );
-          if ( ovChild.is_mapping() && childVal.is_mapping() ) {
-            childVal = internal::deep_merge( childVal, ovChild );
-          }
-          else {
-            // scalars/sequences replace; null clears
-            childVal = ovChild;
-          }
-        }
-        new_sec[childKey] = childVal;
-      }
-      doc_[section] = new_sec;
-
-      while ( session_.path_stack.size() > parent_guard ) {
-        session_.path_stack.pop_back();
-      }
-      continue;
-    }
-
-    doc_[section] = mv;
-
-    while ( session_.path_stack.size() > parent_guard ) {
-      session_.path_stack.pop_back();
-    }
-  }
-}
-
-// Single helper used to handle VALUE_FROM in both the Concretize and Resolve
+// Single helper used to handle VALUE_FROM
 // steps. Errors are handled with throw_error_at() and include path/scope from
 // session_.
 inline yodel::ordered_node yodel::Resolver::materialize_value_from(
   const ordered_node& authored,
   const std::unordered_map< std::string, std::string >& bind_ctx,
-  const char* usage_label, std::optional< std::string > required_shape,
-  BinderMode mode )
+  const char* usage_label, std::optional< std::string > required_shape )
 {
   if ( !authored.is_mapping() || !authored.contains(internal::VALUE_FROM) )
     return authored;
@@ -1356,17 +1054,13 @@ inline yodel::ordered_node yodel::Resolver::materialize_value_from(
   const ordered_node tokNode = authored.at( internal::VALUE_FROM );
   if ( !tokNode.is_string() ) {
     std::ostringstream oss;
-    oss << ( mode == BinderMode::Concretize ? "Concretize: " : "Resolve: " )
-      << "value from for " << usage_label << " must be a string token.";
+    oss << "value from for " << usage_label << " must be a string token.";
     throw_error_at( oss.str() );
   }
 
-  // Bind the token with the provided context (params/local in Concretize;
-  // inherited in Resolve)
   std::string tok = internal::protected_bind(
     internal::to_native_checked< std::string >(tokNode), bind_ctx );
 
-  // Resolve token to canonical identity via IdIndex
   std::string canon;
   const internal::TokenKind kind = internal::classify_token( tok );
   try {
@@ -1374,8 +1068,7 @@ inline yodel::ordered_node yodel::Resolver::materialize_value_from(
       auto cq = session_.ids.resolve_qualified( tok );
       if ( !cq ) {
         std::ostringstream oss;
-        oss << ( mode == BinderMode::Concretize ? "Concretize: " : "Resolve: " )
-          << "value from could not resolve qualified token '" << tok << "'";
+        oss << "value from could not resolve qualified token '" << tok << "'";
         throw_error_at( oss.str(),
           std::optional< std::string >( "resolution: qualified" )
         );
@@ -1392,8 +1085,7 @@ inline yodel::ordered_node yodel::Resolver::materialize_value_from(
   }
   catch ( const std::exception& ) {
     std::ostringstream oss;
-    oss << ( mode == BinderMode::Concretize ? "Concretize: " : "Resolve: " )
-      << "value from could not resolve token '" << tok << "'";
+    oss << "value from could not resolve token '" << tok << "'";
     const char* hint = ( kind == internal::TokenKind::Qualified
       ? "resolution: qualified" : "resolution: ladder" );
     throw_error_at( oss.str(), std::optional< std::string >(hint) );
@@ -1401,7 +1093,6 @@ inline yodel::ordered_node yodel::Resolver::materialize_value_from(
 
   ordered_node imported = session_.ids.canonical_nodes.at( canon );
 
-  // Shape enforcement (if requested)
   if ( required_shape ) {
     const std::string shape = *required_shape;
     const bool is_scalar = internal::is_non_null_scalar( imported );
@@ -1415,22 +1106,19 @@ inline yodel::ordered_node yodel::Resolver::materialize_value_from(
 
     if ( shape == "sequence" && !imported.is_sequence() ) {
       std::ostringstream oss;
-      oss << ( mode == BinderMode::Concretize ? "Concretize: " : "Resolve: " )
-        << "value from for " << usage_label
+      oss << "value from for " << usage_label
         << " must resolve to a sequence (got: " << got << ")";
       throw_error_at( oss.str() );
     }
     if ( shape == "scalar" && !is_scalar ) {
       std::ostringstream oss;
-      oss << ( mode == BinderMode::Concretize ? "Concretize: " : "Resolve: " )
-        << "value from for " << usage_label
+      oss << "value from for " << usage_label
         << " must resolve to a scalar (got: " << got << ")";
       throw_error_at( oss.str() );
     }
     if ( shape == "mapping" && !imported.is_mapping() ) {
       std::ostringstream oss;
-      oss << ( mode == BinderMode::Concretize ? "Concretize: " : "Resolve: " )
-        << "value from for " << usage_label
+      oss << "value from for " << usage_label
         << " must resolve to a mapping (got: " << got << ")";
       throw_error_at( oss.str() );
     }
@@ -1479,7 +1167,7 @@ inline std::unordered_map< std::string, std::string >
       // First, materialize "value from" if present
       ordered_node v2 = materialize_value_from( lv, local_ctx,
         ( internal::LOCALS + internal::PATH_DELIMITER + name ).c_str(),
-        std::nullopt /*shape*/, BinderMode::Concretize );
+        std::nullopt /*shape*/ );
       if ( v2.is_string() ) {
         const std::string bound = internal::protected_bind(
           internal::to_native_checked< std::string >( v2 ), chain_ctx );
@@ -1509,13 +1197,11 @@ inline void yodel::Resolver::collect_index_and_concretize() {
   using internal::BASE_KEYS;
   using internal::ID;
   using internal::INSTANCE_FIELDS;
-  using internal::LITERAL_SWAPS;
   using internal::LOCALS;
   using internal::LOCALS_KEYS;
   using internal::OVERRIDES;
   using internal::OV_PER_INSTANCE;
   using internal::PATH_DELIMITER;
-  using internal::SWAPS;
   using internal::TEMPLATE_PARAMETERS;
 
   // Recursive Concretize walker: expands templates wherever they appear
@@ -1544,8 +1230,7 @@ inline void yodel::Resolver::collect_index_and_concretize() {
           ordered_node resolved = self->materialize_value_from(
             tmpl.at(pname), empty_ctx,
             ( std::string("parameter '") + pname + "'" ).c_str(),
-            std::optional< std::string >( "sequence" ),
-            BinderMode::Concretize
+            std::optional< std::string >( "sequence" )
           );
           if ( !resolved.is_sequence() ) {
             std::ostringstream oss;
@@ -1657,10 +1342,10 @@ inline void yodel::Resolver::collect_index_and_concretize() {
 
           for ( const auto& [lk, lv] : authored.map_items() ) {
             const std::string name = lk.get_value< std::string >();
-            ordered_node v2 = self->materialize_value_from(
-              lv, local_ctx,
-              ( LOCALS + PATH_DELIMITER + name ).c_str(),
-              std::nullopt, BinderMode::Concretize );
+              ordered_node v2 = self->materialize_value_from(
+                lv, local_ctx,
+                ( LOCALS + PATH_DELIMITER + name ).c_str(),
+                std::nullopt );
             if ( v2.is_string() ) {
               const std::string bound = internal::protected_bind(
                 internal::to_native_checked< std::string >( v2 ),
@@ -1713,8 +1398,7 @@ inline void yodel::Resolver::collect_index_and_concretize() {
             ordered_node mv2 = self->materialize_value_from(
               mv, params_ctx,
               ( std::string("instance field '") + k + "'" ).c_str(),
-              std::optional< std::string >( "sequence" ),
-              BinderMode::Concretize
+              std::optional< std::string >( "sequence" )
             );
             if ( !mv2.is_sequence() ) {
               std::ostringstream oss;
@@ -1726,7 +1410,7 @@ inline void yodel::Resolver::collect_index_and_concretize() {
             ordered_node vi2 = self->materialize_value_from(
               vi, params_ctx,
               ( std::string("field '") + k + "'" ).c_str(),
-              std::nullopt, BinderMode::Concretize
+              std::nullopt
             );
 
             if ( vi2.is_string() ) {
@@ -1764,7 +1448,7 @@ inline void yodel::Resolver::collect_index_and_concretize() {
           ordered_node v = self->materialize_value_from(
             kv.second, local_ctx,
             ( std::string("field '") + k + "'" ).c_str(),
-            std::nullopt, BinderMode::Concretize
+            std::nullopt
           );
           const bool exists = obj.contains( k );
           const bool is_null = exists && obj.at( k ).is_null();
@@ -1802,37 +1486,19 @@ inline void yodel::Resolver::collect_index_and_concretize() {
           }
         }
 
-        // Swaps: bind to literals and attach _literal_swaps
-        if ( tmpl.contains(SWAPS) && tmpl.at(SWAPS).is_mapping() ) {
-          const ordered_node authored_swaps = tmpl.at( SWAPS );
-          auto bound = self->bind_swaps_map_to_literals( authored_swaps,
-            local_ctx );
-          if ( !bound.empty() ) {
-            ordered_node swap_node = ordered_node::mapping();
-            for ( const auto& kv : bound ) {
-              swap_node[ kv.first ] = internal::make_node_from( kv.second );
-            }
-            obj[ LITERAL_SWAPS ] = swap_node;
-          }
-        }
-
-        // Identity selection & registration (id -> _id -> locals.id literal)
+        // Identity selection & registration (id -> _id)
         bool has_id = obj.is_mapping() && obj.contains( ID )
           && obj.at( ID ).is_string();
 
         bool has_uid = obj.is_mapping() && obj.contains(AUTO_ID)
           && obj.at(AUTO_ID).is_string();
 
-        bool has_lid = obj.is_mapping() && obj.contains( LOCALS )
-          && obj.at( LOCALS ).is_mapping() && obj.at( LOCALS ).contains( ID )
-          && obj.at( LOCALS ).at( ID ).is_string();
-
         const int count_sources = ( has_id ? 1 : 0 )
-          + ( has_uid ? 1 : 0 ) + ( has_lid ? 1 : 0 );
+          + ( has_uid ? 1 : 0 );
 
         if ( count_sources > 1 ) self->throw_error_at(
           "Conflicting identity fields: {" + ID + ", " + AUTO_ID
-            + ", " + LOCALS + PATH_DELIMITER + ID + "}. Choose exactly one."
+            + "}. Choose exactly one."
         );
 
         std::string elem_scope = section_scope;
@@ -1848,13 +1514,6 @@ inline void yodel::Resolver::collect_index_and_concretize() {
           self->session_.ids.register_token( section_scope, tok, obj );
           elem_scope += PATH_DELIMITER + tok;
         }
-        else if ( has_lid ) {
-          const std::string tok = internal::to_native_checked< std::string >(
-            obj.at( LOCALS ).at( ID )
-          );
-          self->session_.ids.register_token( section_scope, tok, obj );
-          elem_scope += PATH_DELIMITER + tok;
-        }
         else {
           elem_scope += "[" + std::to_string( i ) + "]";
         }
@@ -1864,21 +1523,15 @@ inline void yodel::Resolver::collect_index_and_concretize() {
 
         // Bind overrides with the instance's local_ctx (params + locals)
         ordered_node bound_broadcast = overrides_broadcast;
-        ordered_node bound_per_instance_map = overrides_per_instance_map;
         ordered_node bound_per_instance_seq = overrides_per_instance_seq;
 
-        // Bind strings recursively to materialize placeholders
         internal::bind_strings_recursive( bound_broadcast, local_ctx );
-        internal::bind_strings_recursive( bound_per_instance_map, local_ctx );
         internal::bind_strings_recursive( bound_per_instance_seq, local_ctx );
 
-        // Now capture the bound overrides for Resolve to apply
         ResolveSession::OverridesForInstance pack;
         pack.broadcast_map = bound_broadcast;
-        pack.per_instance_map = bound_per_instance_map;
         pack.per_instance_seq = bound_per_instance_seq;
 
-        // Decide the conditional overlay now (params/locals available here)
         ordered_node cond = internal::evaluate_conditional_per_instance(
           bound_per_instance_seq, local_ctx );
         if ( cond.is_mapping() && cond.size() > 0 ) {
@@ -1966,17 +1619,13 @@ inline void yodel::Resolver::collect_index_and_concretize() {
               if ( lv.is_mapping() ) {
                 const bool has_id = lv.contains( ID );
                 const bool has_uid = lv.contains( AUTO_ID );
-                const bool has_lid = lv.contains( LOCALS )
-                  && lv.at( LOCALS ).is_mapping()
-                  && lv.at( LOCALS ).contains( ID );
 
-                if ( has_id || has_uid || has_lid ) {
+                if ( has_id || has_uid ) {
                   std::ostringstream oss;
                   oss << "Mapping section '" << child_scope
                     << "' uses implicit identity by key; child '" << childKey
                     << "' contains explicit identity ('" + ID + "'/'"
-                    << AUTO_ID << "'/'" << LOCALS << PATH_DELIMITER << ID
-                    << "'), which is not allowed.";
+                    << AUTO_ID << "'), which is not allowed.";
                   self->throw_error_at( oss.str() );
                 }
               }
@@ -2043,16 +1692,12 @@ inline void yodel::Resolver::collect_index_and_concretize() {
           auto concretes
             = this->expand_template_mapping( elem, scope, key_for_path );
           for ( auto& c : concretes ) {
-            // Determine the child scope: append id/_id/locals.id
-            // or [i][j] for element templates
+            // Determine the child scope: append id/_id or [i][j]
             std::string child_scope = scope;
             bool has_id = c.is_mapping() && c.contains( ID )
               && c.at( ID ).is_string();
             bool has_uid = c.is_mapping() && c.contains( AUTO_ID )
               && c.at( AUTO_ID ).is_string();
-            bool has_lid = c.is_mapping() && c.contains( LOCALS )
-              && c.at( LOCALS ).is_mapping() && c.at( LOCALS ).contains( ID )
-              && c.at( LOCALS ).at( ID ).is_string();
 
             if (has_id) {
               child_scope += PATH_DELIMITER
@@ -2088,12 +1733,7 @@ inline void yodel::Resolver::collect_index_and_concretize() {
           && elem.at( ID ).is_string();
         bool has_uid = elem.is_mapping() && elem.contains( AUTO_ID )
           && elem.at( AUTO_ID ).is_string();
-        bool has_lid = elem.is_mapping() && elem.contains( LOCALS )
-          && elem.at( LOCALS ).is_mapping() && elem.at( LOCALS ).contains( ID )
-          && elem.at( LOCALS ).at( ID ).is_string();
 
-        // If this element has an identity, then register it
-        // under the sequence scope
         if ( has_id ) {
           const std::string tok
             = internal::to_native_checked< std::string >( elem.at(ID) );
@@ -2103,13 +1743,6 @@ inline void yodel::Resolver::collect_index_and_concretize() {
         else if ( has_uid ) {
           const std::string tok
             = internal::to_native_checked< std::string >( elem.at(AUTO_ID) );
-          self->session_.ids.register_token( scope, tok, elem );
-          elem_scope += PATH_DELIMITER + tok;
-        }
-        else if ( has_lid ) {
-          const std::string tok = internal::to_native_checked< std::string >(
-            elem.at( LOCALS ).at( ID )
-          );
           self->session_.ids.register_token( scope, tok, elem );
           elem_scope += PATH_DELIMITER + tok;
         }
@@ -2154,81 +1787,12 @@ inline void yodel::Resolver::collect_index_and_concretize() {
   w.walk_mapping( doc_, internal::DOC_ROOT );
 }
 
-inline std::unordered_map< std::string, std::string >
-  yodel::Resolver::bind_swaps_map_to_literals(
-    const ordered_node& swaps_map,
-    const std::unordered_map< std::string, std::string >& ctx )
-{
-  std::unordered_map< std::string, std::string > out;
-  if ( !swaps_map.is_mapping() ) return out;
-
-  for ( const auto& [mk, mv] : swaps_map.map_items() ) {
-    const std::string key_bound
-      = internal::protected_bind( mk.get_value< std::string >(), ctx );
-    const std::string val_bound
-      = internal::protected_bind( internal::to_string_any(mv), ctx );
-    // Last write wins for bound key collisions
-    out[ key_bound ] = val_bound;
-  }
-  return out;
-}
-
-inline void yodel::Resolver::apply_literal_swaps_shallow( ordered_node& node,
-  const std::unordered_map<std::string, std::string>& swaps )
-{
-  using internal::AUTO_LOCAL_PREFIX;
-  using internal::BASE;
-  using internal::ID;
-  using internal::LOCALS;
-  using internal::OVERRIDES;
-  using internal::SWAPS;
-
-  if ( swaps.empty() ) return;
-
-  if ( node.is_mapping() ) {
-    for ( auto& [mk, mv] : node.map_items() ) {
-      const std::string key = mk.get_value< std::string >();
-      // Protected/meta/markers
-      if ( key == ID || key == BASE || key == LOCALS
-        || key == OVERRIDES || key == SWAPS
-        || (!key.empty() && key[0] == AUTO_LOCAL_PREFIX) )
-      {
-        continue;
-      }
-      if ( mv.is_string() ) {
-        const std::string val = mv.get_value< std::string >();
-        auto it = swaps.find( val );
-        if ( it != swaps.end() ) mv = internal::make_node_from( it->second );
-      }
-      // Do not recurse; children will apply swaps themselves when visited
-    }
-  }
-  else if ( node.is_sequence() ) {
-    for ( size_t i = 0; i < node.size(); ++i ) {
-      ordered_node elem = node.at( i );
-      if ( elem.is_string() ) {
-        const std::string val = elem.get_value< std::string >();
-        auto it = swaps.find( val );
-        if ( it != swaps.end() ) {
-          node[ i ] = internal::make_node_from( it->second );
-        }
-      }
-      // Mapping/sequence children: not recursing here
-    }
-  }
-  // Scalars: nothing to do
-}
-
-// Resolve-time identity selection for sequence overlays (id -> _id -> bound locals.id).
-// Policy enforces whether locals.id must be literal (Concretize) or may be bound (Resolve).
 inline std::optional<std::string>
   yodel::Resolver::element_identity_token( const ordered_node& el,
-    const std::unordered_map< std::string, std::string >& ctx,
-    IdentityPolicy policy )
+    const std::unordered_map< std::string, std::string >& ctx )
 {
   using internal::AUTO_ID;
   using internal::ID;
-  using internal::LOCALS;
 
   if ( !el.is_mapping() ) return std::nullopt;
 
@@ -2240,26 +1804,6 @@ inline std::optional<std::string>
     return internal::to_native_checked< std::string >( el.at(AUTO_ID) );
   }
 
-  if ( el.contains(LOCALS) && el.at(LOCALS).is_mapping()
-    && el.at(LOCALS).contains(ID) )
-  {
-    ordered_node lid = el.at( LOCALS ).at( ID );
-    if ( !lid.is_string() ) return std::nullopt;
-    const std::string raw = internal::to_native_checked< std::string >( lid );
-
-    if ( policy == IdentityPolicy::RequireLiteralInConcretize ) {
-      // Concretize: locals.id must be literal; reject if true placeholders
-      // exist
-      if ( internal::contains_true_placeholder(raw) ) return std::nullopt;
-      else return raw;
-    }
-    else {
-      // Resolve: bind with inherited context; reject if placeholders remain
-      const std::string bound = internal::protected_bind( raw, ctx );
-      if ( internal::contains_true_placeholder(bound) ) return std::nullopt;
-      return bound;
-    }
-  }
   return std::nullopt;
 }
 
@@ -2291,8 +1835,7 @@ inline void yodel::Resolver::apply_sequence_overlays_by_id(
 
   for ( std::size_t si = 0; si < base_seq.size(); ++si ) {
     ordered_node el = base_seq.at( si );
-    auto eid_opt = this->element_identity_token( el, inherited_ctx,
-      IdentityPolicy::AllowBoundLocalsInResolve );
+    auto eid_opt = this->element_identity_token( el, inherited_ctx );
     if ( eid_opt ) {
       const std::string& eid = *eid_opt;
       auto it = overlay_by_id.find( eid );
@@ -2425,22 +1968,13 @@ inline void yodel::Resolver::resolve_and_merge_base(
   session_.visited_bases_chain.erase( canon );
 }
 
-// Resolve-mode binder: multi-pass binding with inherited
-// context (nearest-wins). Concretize mode will be used only for write
-// sites; Resolve uses the context stack.
-inline void yodel::Resolver::bind_strings_multi_pass( ordered_node& obj,
-  BinderMode mode )
+// Multi-pass string binding with inherited context (nearest-wins).
+inline void yodel::Resolver::bind_strings_multi_pass( ordered_node& obj )
 {
   using internal::OPEN_PLACEHOLDER;
   using internal::CLOSE_PLACEHOLDER;
 
   if ( !obj.is_mapping() ) return;
-
-  // Concretize binder is used at write sites (Step 5); no multi-pass here.
-  // This entry is provided for completeness; nothing to do in Step 6.
-  if ( mode == BinderMode::Concretize ) return;
-
-  // Resolve: multi-pass binding with inherited context frames
   bool unresolved = false;
   for ( int pass = 0; pass < max_bind_passes_; ++pass ) {
     unresolved = false;
@@ -2511,23 +2045,17 @@ inline void yodel::Resolver::bind_strings_multi_pass( ordered_node& obj,
 // swaps (child-wins, shallow), binding, and canonical identity updates.
 inline void yodel::Resolver::resolve_unified() {
 
-  using internal::LITERAL_SWAPS;
   using internal::OVERRIDES;
   using internal::PATH_DELIMITER;
-  using internal::SWAPS;
 
   if ( !doc_.is_mapping() ) return;
 
-  // Build root context once
   session_.root_ctx = internal::collect_root_context( doc_ );
 
-  // Recursive walker implemented as an inner struct
   struct Walker {
     Resolver* self;
 
-    void walk_mapping( ordered_node& node, const std::string& scope,
-      const std::unordered_map< std::string, std::string >& parent_swaps )
-    {
+    void walk_mapping( ordered_node& node, const std::string& scope ) {
       // Temporarily set the scope path while walking a mapping
       const std::string saved_scope = self->session_.scope_path;
       self->session_.scope_path = scope;
@@ -2572,17 +2100,6 @@ inline void yodel::Resolver::resolve_unified() {
           }
         };
 
-        // Override application order specified in the YODEL grammar:
-        // per-instance -> broadcast
-        if ( pack.per_instance_map.is_mapping() ) {
-
-          // Each field maps to a sequence of overlays (per index) that have
-          // already been captured. For the Resolve step, we apply the overlay
-          // for this instance only if authored as a map-on-sequence.
-          apply_override_map( pack.per_instance_map );
-        }
-        // Apply the precomputed conditional overlay (evaluated during
-        // Concretize).
         if ( pack.conditional_overlay.is_mapping()
           && pack.conditional_overlay.size() > 0 )
         {
@@ -2633,67 +2150,10 @@ inline void yodel::Resolver::resolve_unified() {
       self->resolve_and_merge_base( node, scope );
 
       // Refresh context frame after object-level base merge
-      self->ctx_pop(); // drop frame built before base merge
-      self->ctx_push( node ); // rebuild with inherited fields now present
+      self->ctx_pop();
+      self->ctx_push( node );
 
-      // Inline field-level base merges: for each mapping value with 'base'
-      ordered_node pre = node; // iterate through original keys
-      for ( const auto& [mk, mv] : pre.map_items() ) {
-        const std::string k = mk.get_value< std::string >();
-        if ( !mv.is_mapping() ) continue;
-        ordered_node v = mv;
-        self->resolve_and_merge_base( v, scope );
-        node[ k ] = v;
-      }
-
-      // Compose effective swaps: inherit parent (child-wins cascade), then
-      // overlay local maps (overlay-authored _literal_swaps are inherited)
-      std::unordered_map< std::string, std::string >
-        effective_swaps = parent_swaps;
-      if ( node.contains( LITERAL_SWAPS )
-        && node.at( LITERAL_SWAPS ).is_mapping() )
-      {
-        const ordered_node& smap = node.at( LITERAL_SWAPS );
-        for ( const auto& [sk, sv] : smap.map_items() ) {
-          effective_swaps[ sk.get_value< std::string >() ]
-            = internal::to_string_any( sv ); // child overlays parent
-        }
-      }
-
-      // Overlay authored swaps (bound with Resolve context)
-      {
-        std::unordered_map< std::string, std::string >
-          inherited = self->session_.root_ctx;
-        for ( const auto& frame : self->session_.ctx_stack ) {
-          for ( const auto& kv : frame ) inherited[ kv.first ] = kv.second;
-        }
-        if ( node.contains(SWAPS) && node.at(SWAPS).is_mapping() ) {
-          auto bound = self->bind_swaps_map_to_literals(
-            node.at(SWAPS), inherited );
-          for ( const auto& kv : bound ) {
-            effective_swaps[ kv.first ] = kv.second; // child overlays parent
-          }
-        }
-      }
-
-      // Apply swaps shallowly to this object
-      self->apply_literal_swaps_shallow( node, effective_swaps );
-
-      // Also apply shallowly to immediate sequence fields of this mapping
-      {
-        ordered_node snapshot = node; // iterate original keys
-        for ( const auto& [mk, mv] : snapshot.map_items() ) {
-          const std::string k = mk.get_value< std::string >();
-          if ( mv.is_sequence() ) {
-            ordered_node seq = mv;
-            self->apply_literal_swaps_shallow( seq, effective_swaps );
-            node[ k ] = seq; // write back swapped sequence
-          }
-        }
-      }
-
-      // Bind strings with Resolve context (multi-pass)
-      self->bind_strings_multi_pass( node, BinderMode::Resolve );
+      self->bind_strings_multi_pass( node );
 
       // Update canonical_nodes so later bases see the resolved object
       if ( !scope.empty() ) {
@@ -2714,10 +2174,10 @@ inline void yodel::Resolver::resolve_unified() {
           ? ( scope.empty() ? k : (scope + PATH_DELIMITER + k) ) : scope;
 
         if ( child.is_mapping() ) {
-          this->walk_mapping( child, child_scope, effective_swaps );
+          this->walk_mapping( child, child_scope );
         }
         else if ( child.is_sequence() ) {
-          this->walk_sequence( child, child_scope, k, effective_swaps );
+          this->walk_sequence( child, child_scope, k );
         }
 
         node[ k ] = child;
@@ -2734,21 +2194,14 @@ inline void yodel::Resolver::resolve_unified() {
     }
 
     void walk_sequence( ordered_node& seq, const std::string& scope,
-      const std::string& key_for_path,
-      const std::unordered_map< std::string, std::string >& parent_swaps )
+      const std::string& key_for_path )
     {
-      // Temporarily set the scope path while walking a sequence
       const std::string saved_scope = self->session_.scope_path;
       self->session_.scope_path = scope;
-
-      // Swaps apply to sequence scalars before descending
-      // (use inherited parent swaps)
-      self->apply_literal_swaps_shallow( seq, parent_swaps );
 
       std::vector< ordered_node > out;
       out.reserve( seq.size() );
 
-      // Resolve-time context: merged for identity resolution
       std::unordered_map< std::string, std::string >
         inherited = self->session_.root_ctx;
 
@@ -2759,17 +2212,13 @@ inline void yodel::Resolver::resolve_unified() {
       for ( std::size_t i = 0; i < seq.size(); ++i ) {
         ordered_node v = seq.at( i );
 
-        // Remember the parent's last path segment ("... .key_for_path")
         const std::string parent_segment = self->session_.path_stack.back();
 
-        // Temporarily replace the parent's last segment with "key_for_path[i]"
         self->session_.path_stack.back()
           = internal::seq_indexed( parent_segment, i );
 
-        // Build element scope (append id if present; else use [i])
         std::string elem_scope = scope;
-        auto sid_opt = self->element_identity_token(v, inherited,
-          IdentityPolicy::AllowBoundLocalsInResolve );
+        auto sid_opt = self->element_identity_token( v, inherited );
 
         if ( sid_opt ) {
           const std::string& idStr = *sid_opt;
@@ -2789,12 +2238,11 @@ inline void yodel::Resolver::resolve_unified() {
           elem_scope = elem_scope + '[' + std::to_string( i ) + ']';
         }
 
-        // Descend if the element is either a mapping or a sequence
         if ( v.is_mapping() ) {
-          this->walk_mapping( v, elem_scope, parent_swaps );
+          this->walk_mapping( v, elem_scope );
         }
         else if ( v.is_sequence() ) {
-          this->walk_sequence( v, elem_scope, key_for_path, parent_swaps );
+          this->walk_sequence( v, elem_scope, key_for_path );
         }
 
         // Restore the parent's path segment
@@ -2812,7 +2260,7 @@ inline void yodel::Resolver::resolve_unified() {
 
   Walker w{ this };
   // Start at root mapping with scope "root"
-  w.walk_mapping( doc_, internal::DOC_ROOT, /*parent_swaps=*/ {} );
+  w.walk_mapping( doc_, internal::DOC_ROOT );
 }
 
 inline void yodel::Resolver::prune_final() {
@@ -2821,7 +2269,6 @@ inline void yodel::Resolver::prune_final() {
   using internal::LOCALS;
   using internal::LOCALS_KEYS;
   using internal::OVERRIDES;
-  using internal::SWAPS;
 
   // Recursive prune: drop nulls, locals, meta control sections, markers, and
   // keys in _locals_keys
@@ -2855,9 +2302,9 @@ inline void yodel::Resolver::prune_final() {
         if ( mv.is_null() ) continue;
 
         // Prune locals & immediate meta
-        if ( k == LOCALS || k == OVERRIDES || k == SWAPS ) continue;
+        if ( k == LOCALS || k == OVERRIDES ) continue;
 
-        // Drop markers (_locals_keys, _base_keys, _literal_swaps, etc.)
+        // Drop marker keys (_locals_keys, _base_keys, etc.)
         if ( !k.empty() && k[0] == AUTO_LOCAL_PREFIX ) continue;
 
         // Prune any field listed in _locals_keys

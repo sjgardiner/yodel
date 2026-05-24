@@ -1,0 +1,154 @@
+locals:
+  dir: /my-exp-data/ntuples-stv
+  detvar_names: [ CV, CVextra, dEdx, LYAttenuation, LYDown,
+    LYRayleigh, Recombination, SCE, ThetaXZ, ThetaYZ, X, YZ ]
+  standard_files: [ ext, bnb, dirt, nue, numu, nuwro ]
+
+runs:
+- id: Run1
+  files:
+  - id: "{x}"
+    template parameters: [ x ]
+    x: { value from: standard_files }
+    path: "{dir}/stv-{_fname}"
+    instance fields:
+      _fname:
+      - data_extbnb_mcc9.1_v08_00_00_25_reco2_C_all_reco2.root
+      - run1_neutrinoselection_filt_numu_ALL.root
+      - prodgenie_bnb_dirt_overlay_mcc9.1_v08_00_00_26_run1_reco2_reco2.root
+      - "prodgenie_bnb_intrinsice_nue_uboone_overlay_mcc9.1_v08_00_00_26\
+        _run1_reco2_reco2.root"
+      - "prodgenie_bnb_nu_uboone_overlay_mcc9.1\
+        _v08_00_00_26_filter_run1_reco2_reco2.root"
+      - high_stat_prodgenie_bnb_nu_overlay_DetVar_Run1_NuWro_reco2_reco2.root
+    overrides per-instance:
+    - when: { x: ext }
+      replace: { triggers: 65498807 }
+    - when: { x: bnb }
+      replace: { pot: 1.62e20, triggers: 36139233 }
+
+- id: Run2
+  files:
+  - id: "{x}"
+    template parameters: [ x ]
+    x: { value from: locals.standard_files }
+    path: "{dir}/stv-{_fname}"
+    instance fields:
+      _fname:
+      - data_extbnb_mcc9.1_v08_00_00_25_reco2_D_E_all_reco2.root
+      - run2_neutrinoselection_filt_numu_ALL.root
+      - prodgenie_dirt_overlay_v08_00_00_35_all_run2_reco2_reco2.root
+      - "prodgenie_bnb_intrinsic_nue_overlay_run2_v08_00_00_35_\
+        run2a_reco2_reco2.root"
+      - "prodgenie_bnb_nu_uboone_overlay_mcc9.1_v08_00_00_26_filter\
+        _run2_reco2_D1D2_reco2.root"
+      - high_stat_prodgenie_bnb_nu_overlay_DetVar_Run2_NuWro_reco2_reco2.root
+    overrides per-instance:
+    - when: { x: ext }
+      replace: { triggers: 152404890 }
+    - when: { x: bnb }
+      replace: { pot: 2.62e20, triggers: 62045760 }
+
+- id: Run3
+  files:
+  - id: "{x}"
+    template parameters: [ x ]
+    x: { value from: root.locals.standard_files }
+    path: "{dir}/stv-{_fname}"
+    instance fields:
+      _fname:
+      - data_extbnb_mcc9.1_v08_00_00_25_reco2_F_G_all_reco2.root
+      - run3_neutrinoselection_filt_numu_ALL.root
+      - prodgenie_bnb_dirt_overlay_mcc9.1_v08_00_00_26_run3_reco2_reco2.root
+      - "prodgenie_bnb_intrinsice_nue_uboone_overlay_mcc9.1\
+        _v08_00_00_26_run3_reco2_reco2.root"
+      - "prodgenie_bnb_nu_uboone_overlay_mcc9.1_v08_00_00_26_filter_run3\
+        _reco2_G_reco2.root"
+      - high_stat_prodgenie_bnb_nu_overlay_DetVar_Run3_NuWro_reco2_reco2.root
+    overrides per-instance:
+    - when: { x: ext }
+      replace: { triggers: 214555174 }
+    - when: { x: bnb }
+      replace: { pot: 2.55e20, triggers: 61012955 }
+
+  - id: detvar_{x}
+    template parameters: [ x ]
+    x: { value from: detvar_names }
+    _stem: stv-high_stat_prodgenie_bnb_nu_overlay_DetVar_Run3
+    _end: reco2_reco2.root
+    path: "{dir}/{_stem}_{x}_{_end}"
+
+  data:
+  - CV
+
+  universes:
+  - id: CV
+    description: Central-value prediction, including MicroBooNE Tune
+    recipe:
+    - id: beam_off
+      source: beam_off
+      scaling: triggers
+    - id: mc
+      source: [ numu, nue, dirt ]
+      scaling: pot
+      weight:
+        tree: "nuselection/NeutrinoSelectionFilter"
+        expr: "weight_splines_general_Spline * \
+               weight_TunedCentralValue_UBGenie"
+
+  - id: "{x}"
+    description: Fully-correlated systematic
+    base: CV
+    template parameters: [ x, y ]
+    x: [ POT, NumTargets ]
+    y: [ "1.02", "1.01" ]
+    overrides:
+      recipe:
+        mc: { weight: { expr: "weight_splines_general_Spline * \
+               weight_TunedCentralValue_UBGenie * {y}" } }
+
+  - id: No tune
+    description: Central-value prediction but with MicroBooNE Tune removed
+    base: CV
+    overrides:
+      recipe:
+        mc:
+          weight:
+            expr: "weight_splines_general_Spline"
+
+  - id: "DetVar {x}"
+    description: Detector systematic variation
+    base: CV
+    template parameters: [ x ]
+    x: { value from: root.locals.detvar_names }
+    overrides:
+      recipe:
+        mc:
+          source: [ "detvar_{x}", nue, dirt ]
+          weight: null
+
+  - id: "Reweight {x}"
+    description: Parameter variations to neutrino interaction model
+    base: CV
+    template parameters: [ x ]
+    x: [ All_UBGenie, AxFFCCQEshape_UBGenie, DecayAngMEC_UBGenie,
+         NormCCCOH_UBGenie, NormNCCOH_UBGenie, RPA_CCQE_UBGenie,
+         ThetaDelta2NRad_UBGenie, Theta_Delta2Npi_UBGenie,
+         VecFFCCQEshape_UBGenie, XSecShape_CCMEC_UBGenie ]
+    overrides:
+      recipe:
+        mc:
+          weight:
+            expr: "weight_splines_general_Spline * weight_{x}"
+
+  - id: "Reweight {x}"
+    description: Parameter variations represented by multisims
+    base: CV
+    template parameters: [ x ]
+    x: [ flux_all, reint_all, xsr_scc_Fa3_SCC, xsr_scc_Fv3_SCC ]
+    overrides:
+      recipe:
+        mc:
+          weight:
+            expr: "weight_splines_general_Spline * \
+                   weight_TunedCentralValue_UBGenie * weight_{x}"
