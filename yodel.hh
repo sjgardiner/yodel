@@ -9,6 +9,7 @@
 // Standard library includes
 #include <cctype>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <optional>
 #include <regex>
@@ -706,8 +707,7 @@ namespace internal {
   
   // Detect unresolved true placeholders like "{name}" after a binding pass
   inline bool contains_true_placeholder( const std::string& s ) {
-    static const std::regex ph( R"(\)" + OPEN_PLACEHOLDER
-    + R"("[A-Za-z_][A-Za-z0-9_]*\)" + CLOSE_PLACEHOLDER );
+    static const std::regex ph( R"(\{[A-Za-z_][A-Za-z0-9_]*\})" );
     return std::regex_search( s, ph );
   }
   
@@ -2454,8 +2454,7 @@ inline void yodel::Resolver::bind_strings_multi_pass( ordered_node& obj,
       internal::replace_all( t, OPEN_PLACEHOLDER + OPEN_PLACEHOLDER, "\x01" );
       internal::replace_all( t, CLOSE_PLACEHOLDER + CLOSE_PLACEHOLDER, "\x02" );
 
-      static const std::regex ph( R"(\)" + OPEN_PLACEHOLDER
-      + R"("[A-Za-z_][A-Za-z0-9_]*\)" + CLOSE_PLACEHOLDER );
+      static const std::regex ph( R"(\{([A-Za-z_][A-Za-z0-9_]*)\})" );
       std::smatch m;
       auto begin = t.cbegin();
       std::unordered_set< std::string > names;
