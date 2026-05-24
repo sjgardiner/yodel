@@ -12,7 +12,6 @@
 #include <functional>
 #include <iostream>
 #include <optional>
-#include <regex>
 #include <stdexcept>
 #include <sstream>
 #include <string>
@@ -705,10 +704,47 @@ namespace internal {
     return ctxs;
   }
   
+  // Character predicates for placeholder identifier scanning
+  inline bool is_placeholder_ident_start( char c ) {
+    return ( c >= 'A' && c <= 'Z' ) || ( c >= 'a' && c <= 'z' ) || c == '_';
+  }
+
+  inline bool is_placeholder_ident_continue( char c ) {
+    return is_placeholder_ident_start( c ) || ( c >= '0' && c <= '9' );
+  }
+
   // Detect unresolved true placeholders like "{name}" after a binding pass
   inline bool contains_true_placeholder( const std::string& s ) {
-    static const std::regex ph( R"(\{[A-Za-z_][A-Za-z0-9_]*\})" );
-    return std::regex_search( s, ph );
+    for ( std::size_t i = 0; i < s.size(); ++i ) {
+      if ( s[i] != OPEN_PLACEHOLDER[0] ) continue;
+      if ( i + 2 >= s.size() ) continue;
+      if ( !is_placeholder_ident_start( s[i + 1] ) ) continue;
+      std::size_t j = i + 2;
+      while ( j < s.size() && is_placeholder_ident_continue( s[j] ) ) ++j;
+      if ( j < s.size() && s[j] == CLOSE_PLACEHOLDER[0] ) return true;
+    }
+    return false;
+  }
+
+  // Collect all placeholder names from a string into a set
+  inline std::unordered_set< std::string > collect_placeholder_names(
+    const std::string& s )
+  {
+    std::unordered_set< std::string > names;
+    for ( std::size_t i = 0; i < s.size(); ) {
+      if ( s[i] != OPEN_PLACEHOLDER[0] ) { ++i; continue; }
+      if ( i + 2 >= s.size() ) { ++i; continue; }
+      if ( !is_placeholder_ident_start( s[i + 1] ) ) { ++i; continue; }
+      std::size_t j = i + 2;
+      while ( j < s.size() && is_placeholder_ident_continue( s[j] ) ) ++j;
+      if ( j < s.size() && s[j] == CLOSE_PLACEHOLDER[0] ) {
+        names.insert( s.substr( i + 1, j - i - 1 ) );
+        i = j + 1;
+      } else {
+        ++i;
+      }
+    }
+    return names;
   }
   
   inline ordered_node evaluate_conditional_per_instance(
@@ -2454,20 +2490,13 @@ inline void yodel::Resolver::bind_strings_multi_pass( ordered_node& obj,
       internal::replace_all( t, OPEN_PLACEHOLDER + OPEN_PLACEHOLDER, "\x01" );
       internal::replace_all( t, CLOSE_PLACEHOLDER + CLOSE_PLACEHOLDER, "\x02" );
 
-      static const std::regex ph( R"(\{([A-Za-z_][A-Za-z0-9_]*)\})" );
-      std::smatch m;
-      auto begin = t.cbegin();
-      std::unordered_set< std::string > names;
-      while ( std::regex_search(begin, t.cend(), m, ph) ) {
-        names.insert( m[1].str() );
-        begin = m.suffix().first;
-      }
+      auto names = internal::collect_placeholder_names( t );
       if ( !names.empty() ) {
         std::ostringstream msg;
         msg << "Unified: unresolved placeholder(s) in field '" << key << "': ";
         bool first = true;
         for ( const auto& nm : names ) {
-          if (!first) msg << ", ";
+          if ( !first ) msg << ", ";
           msg << OPEN_PLACEHOLDER << nm << CLOSE_PLACEHOLDER;
           first = false;
         }
