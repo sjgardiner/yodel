@@ -9,7 +9,7 @@ runs:
   files:
   - id: "{x}"
     template parameters: [ x ]
-    x: { value from: standard_files }
+    x: { value from: locals.standard_files }
     path: "{dir}/stv-{_fname}"
     instance fields:
       _fname:
@@ -73,7 +73,7 @@ runs:
 
   - id: detvar_{x}
     template parameters: [ x ]
-    x: { value from: detvar_names }
+    x: { value from: locals.detvar_names }
     _stem: stv-high_stat_prodgenie_bnb_nu_overlay_DetVar_Run3
     _end: reco2_reco2.root
     path: "{dir}/{_stem}_{x}_{_end}"
