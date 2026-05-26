@@ -2110,6 +2110,17 @@ inline void yodel::Resolver::resolve_unified() {
         }
       }
 
+      // Refresh context frame after template overrides
+      self->ctx_pop(); // drop stale frame captured before overrides
+      self->ctx_push( node ); // rebuild frame from the updated mapping
+
+      // Object-level base merges
+      self->resolve_and_merge_base( node, scope );
+
+      // Refresh context frame after object-level base merge
+      self->ctx_pop();
+      self->ctx_push( node );
+
       // Apply concrete object-level overrides on this mapping (if present)
       if ( node.contains(OVERRIDES) && node.at(OVERRIDES).is_mapping() ) {
         const ordered_node overrides = node.at( OVERRIDES );
@@ -2142,16 +2153,9 @@ inline void yodel::Resolver::resolve_unified() {
         }
       }
 
-      // Refresh context frame after overrides
-      self->ctx_pop(); // drop stale frame captured before overrides
+      // Refresh context frame after concrete overrides
+      self->ctx_pop(); // drop stale frame captured before concrete overrides
       self->ctx_push( node ); // rebuild frame from the updated mapping
-
-      // Object-level base merges
-      self->resolve_and_merge_base( node, scope );
-
-      // Refresh context frame after object-level base merge
-      self->ctx_pop();
-      self->ctx_push( node );
 
       self->bind_strings_multi_pass( node );
 
