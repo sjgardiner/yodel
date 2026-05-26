@@ -1660,6 +1660,45 @@ inline void yodel::Resolver::collect_index_and_concretize() {
         const std::string child_scope
           = scope.empty() ? key : ( scope + PATH_DELIMITER + key );
 
+        // Resolve 'value from' for mapping children during concretize
+        // so that imported values (including their registered identities)
+        // are available before subsequent siblings like 'append' reference them.
+        if ( child.is_mapping() && child.contains(internal::VALUE_FROM) ) {
+          ordered_node resolved = self->materialize_value_from(
+            child, {}, "concretize", std::nullopt );
+          node[ key ] = resolved;
+          child = resolved;
+        }
+
+        // Handle 'append' specially: flatten scope so 'base' resolution
+        // inside appended templates sees the target sequence's scope
+        // rather than the append structure's internal path.
+        if ( key == APPEND && child.is_mapping() ) {
+          out[ key ] = ordered_node::mapping();
+          for ( const auto& [ak, av] : child.map_items() ) {
+            const std::string tgt = ak.get_value< std::string >();
+            const std::string tgt_scope = scope.empty()
+              ? tgt : ( scope + PATH_DELIMITER + tgt );
+            ordered_node append_val = av;
+            // Adjust path stack so errors reference the target key,
+            // not the append meta-key
+            const std::string saved_seg
+              = self->session_.path_stack.back();
+            self->session_.path_stack.back() = tgt;
+            if ( append_val.is_sequence() ) {
+              this->walk_sequence( append_val, tgt_scope, tgt );
+            } else if ( append_val.is_mapping() ) {
+              this->walk_mapping( append_val, tgt_scope );
+            }
+            self->session_.path_stack.back() = saved_seg;
+            out[ key ][ tgt ] = append_val;
+          }
+          while ( self->session_.path_stack.size() > parent_guard ) {
+            self->session_.path_stack.pop_back();
+          }
+          continue;
+        }
+
         // If child is a sequence: register section token and walk elements
         if ( child.is_sequence() ) {
           // Register the sequence 'key' as a section under the parent scope

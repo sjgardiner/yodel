@@ -241,8 +241,9 @@ Fully-resolved base:
 ``value from`` (general importer)
 --------------------------------
 A single meta key, ``value from``, lets authors copy values from elsewhere in the document into any authored slot.
-It can be used both during template expansion (for parameters, locals, instance fields, and inline defaults) and
-during resolution on any authored field of a concrete or template object.
+It is resolved during the **concretize phase** for all mapping children (including template parameters, locals,
+instance fields, inline defaults, and arbitrary authored fields), making imported identities available before
+subsequent siblings (such as ``append``) reference them. Any remaining imports are resolved during the unified pass.
 
 **Syntax:**
 
@@ -376,6 +377,10 @@ When a concrete object or template inherits a sequence field (via ``base``, ``va
   (analogous to template-level ``overrides``).
 - Elements inside ``append`` may themselves be templates (``template parameters``), which are expanded
   during the concretize phase before the append is applied during resolution.
+- For concrete objects, templates inside ``append`` resolve ``base`` against the **target sequence's scope**
+  rather than the append structure's internal path. This allows appended templates to reference sibling-scope
+  identities from the target sequence (e.g., a ``base: CV`` appended element finds ``CV`` in the same
+  ``universes`` sequence imported via ``value from``).
 
 
 
@@ -464,13 +469,15 @@ Resolution order (implementation summary)
    - **Locals** (parameters-only context; intra-locals chaining).
    - **Instance fields** (per-index; parameters-only context).
    - **Inline fields** (defaults; set only if missing, null, or from base per provenance).
+   - **Resolve ``value from`` on all mapping children**, importing referenced values and registering their
+     identities (so subsequent siblings like ``append`` can reference them).
    - **Select/register identities** (id → _id) as available.
 5. **Unified Pass:**
-   - **Resolve ``value from`` fields** (including sub-field access) at the start of walking each mapping.
    - **Template-level overrides** → **Per-instance conditional overrides**.
    - **Object-level base** merges (guardrails; clone final base and deep-merge).
    - **Concrete object-level overrides**, including **sequence-by-id** targeting (strict unknown-id checks; order preserved).
-   - **Append** (extend sequences with new elements from ``append`` directives).
+   - **Append** (extend sequences with new elements from ``append`` directives);
+     ``base`` resolution in appended templates uses the target sequence's scope.
    - **Global binding** using inherited context (root + ancestors + current mapping).
    - **Prune** locals/meta/auto-locals and **nulls** everywhere; drop any keys listed in ``_locals_keys`` and
      drop base provenance markers.
