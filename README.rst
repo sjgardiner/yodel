@@ -164,7 +164,7 @@ Explicit clears:
 
 **Unified pass after expansion** performs:
 
-  1) **All overrides** (template-level, per-instance conditional, and concrete object-level):
+  1) **Template-level and per-instance conditional overrides**:
 
      - Mapping values **deep-merge** (override keys win; unspecified keys preserved),
      - Scalar and sequence values **replace**,
@@ -173,8 +173,10 @@ Explicit clears:
        with strict unknown-id checks and order preservation.
 
   2) **Object-level base** merges for concretes (guardrails; clone final base and deep-merge),
-  3) **Binding of plain string placeholders** using an **inherited context**,
-  4) **Pruning** of locals (including underscore auto-locals) and meta,
+  3) **Concrete object-level overrides** (including sequence-by-id targeting),
+  4) **Append** (add new elements to inherited or resolved sequences),
+  5) **Binding of plain string placeholders** using an **inherited context**,
+  6) **Pruning** of locals (including underscore auto-locals) and meta,
      and removal of provenance markers.
 
 Inherited context
@@ -237,8 +239,10 @@ Fully-resolved base:
   (from the canonical index), not its pre-expansion authored form.
 
 ``value from`` (general importer)
----------------------------------
+--------------------------------
 A single meta key, ``value from``, lets authors copy values from elsewhere in the document into any authored slot.
+It can be used both during template expansion (for parameters, locals, instance fields, and inline defaults) and
+during resolution on any authored field of a concrete or template object.
 
 **Syntax:**
 
@@ -257,9 +261,18 @@ A single meta key, ``value from``, lets authors copy values from elsewhere in th
     value from: "root.locals.defaults.settings"
     log_level: debug   # deep-merge: authored keys win
 
+  # Import a sequence from a sibling object during resolution
+  universes: { value from: "root.runs.Run1.universes" }
+
 **Semantics:**
 - Resolve the **token** (qualified → direct; unqualified/partial → ladder) and **copy** the referenced node **in place**.
   The meta key ``value from`` is **pruned** from the final output.
+
+- **Sub-field access.** Qualified and partial tokens that do not resolve directly to a canonical node
+  are tried as a **prefix scope** plus **sub-field path**. For example, ``root.runs.Run1.universes``
+  resolves the canonical node ``root.runs.Run1`` and navigates to its ``universes`` field.
+  This works for any depth: ``root.runs.Run1.some.nested.field`` resolves through multiple levels.
+  If an intermediate field is not a mapping, or a field does not exist, a clear error is raised.
 
 - **Shape rules** at the usage site:
   - Under a parameter name listed in ``template parameters``, the imported value **must be a sequence**; otherwise Concretize error.
@@ -278,6 +291,8 @@ A single meta key, ``value from``, lets authors copy values from elsewhere in th
   ``value from`` for parameter ``x`` must resolve to a sequence (got: scalar).
 - Unknown token:
   ``value from`` could not resolve token ``locals.detvar_names`` (resolution: ladder).
+- Missing sub-field:
+  ``value from``: field ``universes`` not found in ``root.runs.Run1``.
 
 Overrides
 ---------
@@ -300,7 +315,8 @@ Object-level overrides (concretes)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 An authored ``overrides`` mapping may appear on any concrete object.
 
-**Application:** Object-level overrides are applied during the unified pass after template/broadcast overrides.
+**Application:** Object-level overrides are applied during the unified pass **after** object-level base merges
+(so that fields inherited from a base exist before sequence-by-id targeting).
 
 Sequence-by-id overrides
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -314,7 +330,52 @@ keys as **sequence element ids** and **deep-merge** the provided overlays into t
 - **Ordering inside unified pass.** Implementations apply:
   1) Template-level overrides,
   2) Per-instance conditional overrides,
-  3) Concrete object-level overrides.
+  3) Object-level base merges,
+  4) Concrete object-level overrides,
+  5) Append directives.
+
+Append
+~~~~~~
+When a concrete object or template inherits a sequence field (via ``base``, ``value from``, or direct authorship),
+``append`` extends it with new elements without repeating the existing ones.
+
+**Syntax (concrete object):**
+
+.. code-block:: yaml
+
+  - id: Run2
+    universes: { value from: root.runs.Run1.universes }
+    overrides:
+      universes:
+        CV: { recipe: { mc: { ... } } }
+    append:
+      universes:
+        - id: NewUniverse
+          recipe: [ ... ]
+
+**Syntax (template):**
+
+.. code-block:: yaml
+
+  - id: "{x}"
+    template parameters: [ x ]
+    base: SomeBase
+    append:
+      universes:
+        - id: "new_{{ x }}"
+          recipe: [ ... ]
+
+**Semantics:**
+- ``append`` maps **sequence field names** to **sequences of new elements**.
+- The target sequence must exist, be null, or not yet exist. If null or absent, a new sequence is created.
+- If the target field exists but is not a sequence (e.g., a mapping or scalar), the resolver raises an error.
+- The new elements are appended **after** all existing elements in the target sequence.
+- ``append`` runs after template overrides, base merges, and concrete overrides, so overrides can modify
+  inherited elements before new ones are added.
+- On templates, ``append`` is captured during expansion, bound per-instance, and broadcast to all instances
+  (analogous to template-level ``overrides``).
+- Elements inside ``append`` may themselves be templates (``template parameters``), which are expanded
+  during the concretize phase before the append is applied during resolution.
 
 
 
@@ -327,7 +388,7 @@ Binding (unified pass)
 Pruning
 -------
 - Drop **nulls** globally.
-- Remove **meta** control sections like ``overrides`` and ``value from``.
+- Remove **meta** control sections like ``overrides``, ``value from``, and ``append``.
 - Remove all **locals** sections and ``_``-prefixed auto-locals.
 - Remove any fields listed in ``_locals_keys`` (locals originating in base or current template).
 - Drop base provenance markers (e.g., ``_base_keys``) from the final resolved output **and** from the final in-memory DOM.
@@ -360,7 +421,7 @@ Ambiguity and ladder errors
 Final emission
 --------------
 Implementations SHOULD omit:
-- All **meta** control sections like ``overrides`` and ``value from``,
+- All **meta** control sections like ``overrides``, ``value from``, and ``append``,
 - All **locals** sections and ``_``-prefixed auto-locals,
 - Any field with explicit **``null``** value,
 - Base provenance markers (``_base_keys``),
@@ -405,10 +466,12 @@ Resolution order (implementation summary)
    - **Inline fields** (defaults; set only if missing, null, or from base per provenance).
    - **Select/register identities** (id → _id) as available.
 5. **Unified Pass:**
-   - **Template-level overrides** → **Per-instance conditional overrides** → **Concrete object-level overrides**,
-     including **sequence-by-id** targeting (strict unknown-id checks; order preserved).
-   - **Object-level base** (guardrails),
-   - **Global binding** using inherited context (root + ancestors + current mapping),
+   - **Resolve ``value from`` fields** (including sub-field access) at the start of walking each mapping.
+   - **Template-level overrides** → **Per-instance conditional overrides**.
+   - **Object-level base** merges (guardrails; clone final base and deep-merge).
+   - **Concrete object-level overrides**, including **sequence-by-id** targeting (strict unknown-id checks; order preserved).
+   - **Append** (extend sequences with new elements from ``append`` directives).
+   - **Global binding** using inherited context (root + ancestors + current mapping).
    - **Prune** locals/meta/auto-locals and **nulls** everywhere; drop any keys listed in ``_locals_keys`` and
      drop base provenance markers.
 6. **Emission:** Serialize with ordered mappings; locals/meta/markers removed; nulls removed.
