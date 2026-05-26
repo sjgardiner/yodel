@@ -57,6 +57,7 @@ namespace internal {
   inline const std::string OVERRIDES = "overrides";
   inline const std::string INSTANCE_FIELDS = "instance fields";
   inline const std::string OV_PER_INSTANCE = OVERRIDES + " per-instance";
+  inline const std::string APPEND = "append";
   inline const std::string WHEN = "when";
   inline const std::string REPLACE = "replace";
   inline const std::string VALUE_FROM = "value from";
@@ -158,6 +159,8 @@ namespace internal {
         ordered_node broadcast_map;
         // pre-computed conditional overlay from per_instance_seq
         ordered_node conditional_overlay;
+        // append map (sequence_name -> [new elements])
+        ordered_node append_map;
 
         inline bool has_any() const;
       };
@@ -585,7 +588,7 @@ namespace internal {
     // Meta keys to exclude when collecting inline defaults
     std::unordered_set< std::string > meta = {
       TEMPLATE_PARAMETERS, BASE, OVERRIDES, INSTANCE_FIELDS,
-      OV_PER_INSTANCE, LOCALS
+      OV_PER_INSTANCE, LOCALS, APPEND
     };
 
     // Also exclude parameter arrays (names listed under template parameters)
@@ -942,7 +945,8 @@ inline bool yodel::Resolver::ResolveSession
 {
   return ( per_instance_seq.is_sequence() && per_instance_seq.size() > 0) ||
     ( broadcast_map.is_mapping() && broadcast_map.size() > 0) ||
-    ( conditional_overlay.is_mapping() && conditional_overlay.size() > 0 );
+    ( conditional_overlay.is_mapping() && conditional_overlay.size() > 0 ) ||
+    ( append_map.is_mapping() && append_map.size() > 0 );
 }
 
 // Read from an input stream until end-of-file, then apply full processing
@@ -1275,6 +1279,10 @@ inline void yodel::Resolver::collect_index_and_concretize() {
         if ( opi.is_mapping() ) overrides_per_instance_map = opi;
         else if ( opi.is_sequence() ) overrides_per_instance_seq = opi;
       }
+      ordered_node append_map = ordered_node::mapping();
+      if ( tmpl.contains(APPEND) && tmpl.at(APPEND).is_mapping() ) {
+        append_map = tmpl.at( APPEND );
+      }
 
       std::vector< ordered_node > instances;
       instances.reserve( N );
@@ -1524,13 +1532,16 @@ inline void yodel::Resolver::collect_index_and_concretize() {
         // Bind overrides with the instance's local_ctx (params + locals)
         ordered_node bound_broadcast = overrides_broadcast;
         ordered_node bound_per_instance_seq = overrides_per_instance_seq;
+        ordered_node bound_append = append_map;
 
         internal::bind_strings_recursive( bound_broadcast, local_ctx );
         internal::bind_strings_recursive( bound_per_instance_seq, local_ctx );
+        internal::bind_strings_recursive( bound_append, local_ctx );
 
         ResolveSession::OverridesForInstance pack;
         pack.broadcast_map = bound_broadcast;
         pack.per_instance_seq = bound_per_instance_seq;
+        pack.append_map = bound_append;
 
         ordered_node cond = internal::evaluate_conditional_per_instance(
           bound_per_instance_seq, local_ctx );
@@ -2045,6 +2056,7 @@ inline void yodel::Resolver::bind_strings_multi_pass( ordered_node& obj )
 // swaps (child-wins, shallow), binding, and canonical identity updates.
 inline void yodel::Resolver::resolve_unified() {
 
+  using internal::APPEND;
   using internal::OVERRIDES;
   using internal::PATH_DELIMITER;
 
@@ -2062,6 +2074,37 @@ inline void yodel::Resolver::resolve_unified() {
 
       // Push this mapping's scalar/string fields into context (nearest wins)
       self->ctx_push( node );
+
+      // Helper to apply append map (sequence_name -> [new elements])
+      auto apply_append_map = [&]( const ordered_node& append_map ) -> void {
+        if ( !append_map.is_mapping() ) return;
+        for ( const auto& [sk, sv] : append_map.map_items() ) {
+          const std::string seq_name = sk.get_value< std::string >();
+          if ( !sv.is_sequence() ) {
+            throw_error_at( "'" + APPEND + ": " + seq_name
+              + "' value must be a sequence" );
+          }
+          if ( !node.contains(seq_name)
+            || node.at(seq_name).is_null() )
+          {
+            node[ seq_name ] = ordered_node::sequence();
+          }
+          if ( !node.at(seq_name).is_sequence() ) {
+            throw_error_at( "Cannot " + APPEND + " to '" + seq_name
+              + "': target is not a sequence" );
+          }
+          ordered_node target_seq = node.at( seq_name );
+          std::vector< ordered_node > new_seq;
+          new_seq.reserve( target_seq.size() + sv.size() );
+          for ( std::size_t i = 0; i < target_seq.size(); ++i ) {
+            new_seq.push_back( target_seq.at(i) );
+          }
+          for ( std::size_t i = 0; i < sv.size(); ++i ) {
+            new_seq.push_back( sv.at(i) );
+          }
+          node[ seq_name ] = internal::make_node_from( new_seq );
+        }
+      };
 
       // Apply per-instance and broadcast overrides (if any) keyed by current
       // scope
@@ -2108,6 +2151,9 @@ inline void yodel::Resolver::resolve_unified() {
         if ( pack.broadcast_map.is_mapping() ) {
           apply_override_map( pack.broadcast_map );
         }
+        if ( pack.append_map.is_mapping() && pack.append_map.size() > 0 ) {
+          apply_append_map( pack.append_map );
+        }
       }
 
       // Refresh context frame after template overrides
@@ -2153,8 +2199,13 @@ inline void yodel::Resolver::resolve_unified() {
         }
       }
 
-      // Refresh context frame after concrete overrides
-      self->ctx_pop(); // drop stale frame captured before concrete overrides
+      // Apply concrete object-level append on this mapping (if present)
+      if ( node.contains(APPEND) && node.at(APPEND).is_mapping() ) {
+        apply_append_map( node.at( APPEND ) );
+      }
+
+      // Refresh context frame after concrete overrides and append
+      self->ctx_pop(); // drop stale frame captured before concrete overrides/append
       self->ctx_push( node ); // rebuild frame from the updated mapping
 
       self->bind_strings_multi_pass( node );
@@ -2306,7 +2357,7 @@ inline void yodel::Resolver::prune_final() {
         if ( mv.is_null() ) continue;
 
         // Prune locals & immediate meta
-        if ( k == LOCALS || k == OVERRIDES ) continue;
+        if ( k == LOCALS || k == OVERRIDES || k == APPEND ) continue;
 
         // Drop marker keys (_locals_keys, _base_keys, etc.)
         if ( !k.empty() && k[0] == AUTO_LOCAL_PREFIX ) continue;
