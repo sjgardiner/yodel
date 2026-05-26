@@ -1,5 +1,5 @@
-// ╻ ╻┏━┓╺┳┓┏━╸╻  
-// ┗┳┛┃ ┃ ┃┃┣╸ ┃  
+// ╻ ╻┏━┓╺┳┓┏━╸╻
+// ┗┳┛┃ ┃ ┃┃┣╸ ┃
 //  ╹ ┗━┛╺┻┛┗━╸┗━╸
 //  YAML Object Derivation & Expansion Language
 //  version 0.1.0 | MIT License
@@ -74,32 +74,32 @@ namespace internal {
 
     // parent_scope -> vector of child object scopes (canonical scope strings)
     std::unordered_map< std::string, std::vector< std::string > > children;
-  
+
     static std::string parent_of( const std::string& scope );
-  
+
     void register_child_scope( const std::string& parent_scope,
       const std::string& child_scope );
 
     void register_token( const std::string& scope, const std::string& token,
       const ordered_node& obj );
-  
+
     bool has_canonical( const std::string& canon ) const;
-  
+
     std::optional< std::string >
       resolve_qualified( const std::string& token ) const;
-  
+
     // Unqualified tokens: single symbol, sibling-first ladder
     // with rung-local ambiguity
     std::string resolve_via_ladder( const std::string& start_scope,
       const std::string& token ) const;
-  
+
     // Attempt a complete chain "[s1, s2, ...]" starting from base scope.
     // Returns canonical identity of the last segment
     // if the full chain exists; otherwise the return value is empty.
     std::optional< std::string > try_chain_once(
       const std::string& base_scope,
       const std::vector< std::string >& segs ) const;
-  
+
     // Partially-scoped tokens: dotted, not starting with "root."
     std::string resolve_partial_chain( const std::string& start_scope,
       const std::vector<std::string>& segs ) const;
@@ -114,42 +114,42 @@ namespace internal {
     // Default maximum number of passes for the Resolve processing step
     static constexpr int DEFAULT_MAX_PASSES = 5;
     int max_bind_passes_ = DEFAULT_MAX_PASSES;
- 
+
   public:
     // Constructor optionally takes a non-default number of Resolve passes
     // allowed during the Resolve step
     inline explicit Resolver( int bind_passes = DEFAULT_MAX_PASSES )
       : max_bind_passes_( bind_passes ), session_() {}
-  
+
     // Concretize + Resolve YODEL --> plain YAML
     ordered_node resolve( std::istream& in );
     ordered_node resolve( const std::string& text );
 
   private:
- 
+
     // Wraps internal state refreshed upon each call to resolve(...)
     struct ResolveSession {
 
       // Manages canonical identity indexing
       internal::IdIndex ids;
-  
+
       // Root context (collected once)
       std::unordered_map< std::string, std::string > root_ctx;
 
       // Inherited context (nearest-wins)
       std::vector<
         std::unordered_map< std::string, std::string > > ctx_stack;
-  
+
       // Tracks the path using sequence-element indexing,
       // e.g., ["root", "runs[0]", "files"]
       std::vector< std::string > path_stack;
-      
+
       // Canonical scope, e.g., "root.runs.Run1"
       std::string scope_path;
-  
+
       // Inline base cycle detection (per object chain)
       std::unordered_set<std::string> visited_bases_chain;
-  
+
       // Overrides authored on templates, captured during Concretize
       // and applied later in Resolve (per instance canonical scope).
       struct OverridesForInstance {
@@ -169,37 +169,37 @@ namespace internal {
       std::unordered_map< std::string,
         OverridesForInstance > overrides_index;
     };
-  
+
     // Current document object model (DOM) being processed
     ordered_node doc_;
 
     // Other internal state used during a call to resolve(...)
     ResolveSession session_;
-  
+
     // Processing stages
     ordered_node parse_and_preflight( const std::string& yaml_text );
     void collect_index_and_concretize(); // operates on doc_ and session_
     void resolve_unified(); // operates on doc_ and session_
     void prune_final(); // operates on doc_
-  
+
     void bind_strings_multi_pass( ordered_node& obj );
-  
+
     // 'value from' materializer
     ordered_node materialize_value_from( const ordered_node& authored,
       const std::unordered_map< std::string, std::string >& bind_ctx,
       const char* usage_label, std::optional<std::string> required_shape );
-  
+
     std::optional< std::string > element_identity_token(
       const ordered_node& el,
       const std::unordered_map< std::string, std::string >& ctx );
-  
+
     void apply_sequence_overlays_by_id( ordered_node& base_seq,
       const ordered_node& overlay_map );
-  
+
     // Base resolver/merger
     void resolve_and_merge_base( ordered_node& target_map,
       const std::string& current_object_canon );
-  
+
     // Concretize uses params/local context only (intra-locals chaining)
     std::unordered_map< std::string, std::string >
     build_concretize_local_ctx( const ordered_node& obj_or_template,
@@ -209,11 +209,11 @@ namespace internal {
     // handled using a stack
     void ctx_push( const ordered_node& mapping_fields );
     void ctx_pop();
-  
+
     // Helper for building error messages
     [[noreturn]] void throw_error_at( const std::string& msg,
       const std::optional< std::string >& hint = std::nullopt );
-  
+
   }; // class Resolver
 
 namespace internal {
@@ -224,7 +224,7 @@ namespace internal {
     Partial, // Includes section divisions (via PATH_DELIMITER), needs search
     Unqualified // No section divisions
   };
-  
+
   inline TokenKind classify_token( const std::string& tok ) {
     if ( tok.rfind(DOC_ROOT + PATH_DELIMITER, 0) == 0 ) {
       return TokenKind::Qualified;
@@ -234,7 +234,7 @@ namespace internal {
     }
     return TokenKind::Unqualified;
   }
-  
+
   // Divide an identity token string by PATH_DELIMITER instances
   inline std::vector< std::string > split_segments( const std::string& tok ) {
     std::vector< std::string > segs;
@@ -250,7 +250,7 @@ namespace internal {
     }
     return segs;
   }
-  
+
   // Connects identity tokens into a full path string with PATH_DELIMITER
   inline std::string join_path( const std::vector< std::string >& segs ) {
     std::string s;
@@ -260,33 +260,33 @@ namespace internal {
     }
     return s;
   }
-  
+
   // Append a numerical index to the end of a base path string
   inline std::string seq_indexed( const std::string& base, size_t idx ) {
     return base + '[' + std::to_string( idx ) + ']';
   }
-  
+
   // Helper that checks whether an ordered_node is a non-null scalar field
   inline bool is_non_null_scalar( const ordered_node& n ) {
     return ( n.is_scalar() && !n.is_null() );
   }
 
   // Helpers for conversions to/from the ordered_node type
-  
+
   template < typename T >
   inline T to_native_checked( const ordered_node& n ) {
     T out;
     fkyaml::node_value_converter< T >::from_node( n, out );
     return out;
   }
-  
+
   template < typename T >
   inline ordered_node make_node_from( const T& value ) {
     ordered_node n;
     fkyaml::node_value_converter< T >::to_node( n, value );
     return n;
   }
-  
+
   inline std::string to_string_any( const ordered_node& n ) {
     if ( n.is_string() ) return to_native_checked< std::string >( n );
     if ( n.is_integer() ) return std::to_string(
@@ -316,7 +316,7 @@ namespace internal {
 
     // If the overlay is a mapping but the base isn't, the overlay replaces it
     if ( !base.is_mapping() ) return overlay;
-  
+
     // Copy the base map
     ordered_node result = base;
 
@@ -332,15 +332,15 @@ namespace internal {
     }
     return result;
   }
-  
+
   // Helpers for rejection of YAML anchors/aliases in raw text input
-  
+
   // Character classes for raw-text scan
   inline bool is_anchor_alias_name_char( char ch ) {
     unsigned char c = static_cast< unsigned char >( ch );
     return std::isalnum( c ) || c == '_' || c == '-';
   }
-  
+
   // Characters that can precede the start of a YAML value token.
   inline bool is_boundary_left_char( char ch ) {
     switch ( ch ) {
@@ -350,7 +350,7 @@ namespace internal {
       default: return false;
     }
   }
-  
+
   // Characters that can follow the end of an alias/anchor token.
   inline bool is_boundary_right_char( char ch ) {
     switch ( ch ) {
@@ -360,31 +360,31 @@ namespace internal {
       default: return false;
     }
   }
-  
+
   // Reject anchor/alias tokens (&/*) at relevant boundaries in raw YAML
   // input (comments and quoted strings will be skipped)
   inline void preflight_reject_anchors_aliases( const std::string& text ) {
     bool in_single = false, in_double = false, in_comment = false;
     size_t line = 1, col = 0;
-  
+
     for ( size_t i = 0; i < text.size(); ++i ) {
       char c = text[ i ]; col++;
-  
+
       // Newline resets comment state and column
       if ( c == '\n' ) { in_comment = false; line++; col = 0; continue; }
-  
+
       // Comment handling (outside quotes): '#' starts a comment until newline
       if ( !in_double && !in_single ) {
         if ( !in_comment && c == '#' ) { in_comment = true; continue; }
       }
 
       if ( in_comment ) continue;
-  
+
       // Quote state machine
       if ( !in_double && c == '\'' ) { in_single = !in_single; continue; }
       if ( !in_single && c == '\"' ) { in_double = !in_double; continue; }
       if ( in_single || in_double ) continue;
-  
+
       // Detect anchors/aliases with token-boundary checks
       if ( c == '&' || c == '*' ) {
         size_t j = i + 1;
@@ -392,22 +392,22 @@ namespace internal {
           // Scan left to previous non-whitespace character
           size_t p = i;
           while ( p > 0 && (text[p - 1] == ' ' || text[p - 1] == '\t') ) --p;
-  
+
           bool at_value_start = ( p == 0 ) || ( text[p - 1] == '\n' )
             || is_boundary_left_char( text[p - 1] );
 
           // The current '&' or '*' is embedded in a scalar -> ignore
           if ( !at_value_start ) continue;
-  
+
           // Consume anchor/alias name
           size_t k = j + 1;
           while ( k < text.size() && is_anchor_alias_name_char(text[k]) ) ++k;
-  
+
           // Scan right to next non-whitespace (skip space, tab, CR)
           size_t r = k;
           while ( r < text.size()
             && (text[r] == ' ' || text[r] == '\t' || text[r] == '\r') ) ++r;
-  
+
           // Token must end at a valid right boundary
           bool ends_here = ( r >= text.size() ) || ( text[r] == '\n' )
             || is_boundary_right_char( text[r] );
@@ -426,7 +426,7 @@ namespace internal {
       }
     }
   }
-  
+
   // DOM-level detection of anchors/aliases, just in case
   inline void detect_anchors_or_throw( const ordered_node& node,
     const std::vector< std::string >& path )
@@ -440,7 +440,7 @@ namespace internal {
       oss << " are not allowed by the grammar";
       throw std::runtime_error( oss.str() );
     }
-  
+
     if ( node.is_mapping() ) {
       for ( const auto& [mk, mv] : node.map_items() ) {
         std::vector< std::string > p2 = path;
@@ -456,7 +456,7 @@ namespace internal {
       }
     }
   }
-  
+
   // In YODEL, a mapping is considered a "section container" if
   // - It defines template parameters, OR
   // - Any immediate child is a mapping or a sequence
@@ -478,7 +478,7 @@ namespace internal {
     if ( !obj.is_mapping() || !obj.contains(BASE_KEYS) ) return;
     const ordered_node& bk = obj.at( BASE_KEYS );
     if ( !bk.is_sequence() ) return;
-  
+
     std::vector< ordered_node > kept;
     kept.reserve( bk.size() );
     for ( size_t i = 0; i < bk.size(); ++i ) {
@@ -489,7 +489,7 @@ namespace internal {
     }
     obj[ BASE_KEYS ] = make_node_from( kept );
   }
-  
+
   // Utility: is a given key listed for pruning in _locals_keys?
   inline bool is_key_listed_in_locals_keys( const ordered_node& node,
     const std::string& key )
@@ -504,7 +504,7 @@ namespace internal {
     }
     return false;
   }
-  
+
   // Simple replace-all utility for substrings
   inline void replace_all( std::string& s, const std::string& from,
     const std::string& to )
@@ -516,7 +516,7 @@ namespace internal {
       pos += to.size();
     }
   }
-  
+
   // Bind placeholders {name} using a context map.
   // Protect doubled placeholder delimiters OPEN_PLACEHOLDER
   // and CLOSE_PLACEHOLDER and interpret them as literal single versions
@@ -535,7 +535,7 @@ namespace internal {
       const std::string ph = OPEN_PLACEHOLDER + kv.first + CLOSE_PLACEHOLDER;
       replace_all( t, ph, kv.second );
     }
-  
+
     replace_all( t, OPEN_PROTECTOR, OPEN_PLACEHOLDER );
     replace_all( t, CLOSE_PROTECTOR, CLOSE_PLACEHOLDER );
     return t;
@@ -577,14 +577,14 @@ namespace internal {
     }
     // scalars/null: nothing to do
   }
-  
+
   // Extract authored inline (non-meta) fields from a template mapping
   inline std::vector< std::pair< std::string, ordered_node > >
     collect_inline_fields_excluding_meta( const ordered_node& tmpl )
   {
     std::vector< std::pair< std::string, ordered_node > > out;
     if ( !tmpl.is_mapping() ) return out;
-  
+
     // Meta keys to exclude when collecting inline defaults
     std::unordered_set< std::string > meta = {
       TEMPLATE_PARAMETERS, BASE, OVERRIDES, INSTANCE_FIELDS,
@@ -600,7 +600,7 @@ namespace internal {
         }
       }
     }
-  
+
     for ( const auto& [mk, mv] : tmpl.map_items() ) {
       const std::string k = mk.get_value<std::string>();
       // Skip entries with meta keys
@@ -609,20 +609,20 @@ namespace internal {
     }
     return out;
   }
-  
+
   // Build per-index parameter contexts {name -> value_string}
   inline std::vector< std::unordered_map< std::string, std::string > >
     build_param_contexts_require( const ordered_node& tmpl,
       std::string* error_msg_out /* optional */ )
   {
     std::vector< std::unordered_map< std::string, std::string > > ctxs;
-  
+
     if ( !tmpl.is_mapping() || !tmpl.contains(TEMPLATE_PARAMETERS) ) {
       if ( error_msg_out ) *error_msg_out = "Template entry missing required '"
         + TEMPLATE_PARAMETERS + "'.";
       return ctxs;
     }
-  
+
     const ordered_node& p = tmpl.at( TEMPLATE_PARAMETERS );
     std::vector< std::string > params;
     for ( const auto& pname : p ) {
@@ -632,7 +632,7 @@ namespace internal {
       ctxs.push_back( {} ); // single empty context
       return ctxs;
     }
-  
+
     // Determine length N from the first parameter array
     const size_t N = tmpl.at( params[0] ).size();
     for ( size_t j = 1; j < params.size(); ++j ) {
@@ -647,7 +647,7 @@ namespace internal {
         return {};
       }
     }
-  
+
     ctxs.reserve( N );
     for ( size_t i = 0; i < N; ++i ) {
       std::unordered_map< std::string, std::string > ctx;
@@ -658,7 +658,7 @@ namespace internal {
     }
     return ctxs;
   }
-  
+
   // Character predicates for placeholder identifier scanning
   inline bool is_placeholder_ident_start( char c ) {
     return ( c >= 'A' && c <= 'Z' ) || ( c >= 'a' && c <= 'z' ) || c == '_';
@@ -701,7 +701,7 @@ namespace internal {
     }
     return names;
   }
-  
+
   inline ordered_node evaluate_conditional_per_instance(
     // sequence of { when, replace }
     const ordered_node& rules,
@@ -710,7 +710,7 @@ namespace internal {
   {
     ordered_node overlay = ordered_node::mapping();
     if ( !rules.is_sequence() ) return overlay; // empty
-  
+
     // Accumulate replacements
     auto key_equals = [&]( const std::string& key,
       const ordered_node& criterion ) -> bool
@@ -718,7 +718,7 @@ namespace internal {
       auto it = pctx.find( key );
       if ( it == pctx.end() ) return false;
       std::string actual = it->second;
-  
+
       if ( criterion.is_sequence() ) {
         // OR semantics: match if any element equals
         for ( size_t i = 0; i < criterion.size(); ++i ) {
@@ -729,7 +729,7 @@ namespace internal {
       // scalar match
       return actual == to_string_any( criterion );
     };
-  
+
     for ( size_t ri = 0; ri < rules.size(); ++ri ) {
       ordered_node rule = rules.at( ri );
       if ( !rule.is_mapping() || !rule.contains(WHEN)
@@ -737,7 +737,7 @@ namespace internal {
 
       ordered_node when = rule.at( WHEN );
       ordered_node repl = rule.at( REPLACE );
-  
+
       // All keys in 'when' must match; each key supports OR
       // semantics via sequence
       bool match = true;
@@ -751,13 +751,13 @@ namespace internal {
         match = false;
       }
       if ( !match ) continue;
-  
+
       // Last match wins: deep-merge overlay with repl (repl wins on conflicts)
       overlay = deep_merge( overlay, repl );
     }
     return overlay;
   }
-  
+
   // Build a root-level context frame from the DOM:
   // - root.locals scalars and strings
   // - other root-level simple scalars/strings
@@ -767,7 +767,7 @@ namespace internal {
   {
     std::unordered_map< std::string, std::string > ctx;
     if ( !doc.is_mapping() ) return ctx;
-  
+
     // 1) root.locals first (locals override other root fields)
     if ( doc.contains(LOCALS) ) {
       const ordered_node& loc = doc.at( LOCALS );
@@ -781,7 +781,7 @@ namespace internal {
         }
       }
     }
-  
+
     // 2) other root-level simple strings/scalars
     // (skip meta and section containers)
     for ( const auto& [mk, mv] : doc.map_items() ) {
@@ -789,13 +789,13 @@ namespace internal {
       if ( k == OVERRIDES || k == LOCALS ) continue;
       if ( mv.is_mapping() && mapping_is_section_container(mv) ) continue;
       if ( mv.is_sequence() ) continue;
-  
+
       if ( is_non_null_scalar(mv) )
       {
         if ( !ctx.count(k) ) ctx[ k ] = to_string_any( mv );
       }
     }
-  
+
     return ctx;
   }
 
@@ -1066,22 +1066,66 @@ inline yodel::ordered_node yodel::Resolver::materialize_value_from(
     internal::to_native_checked< std::string >(tokNode), bind_ctx );
 
   std::string canon;
+  ordered_node imported;
+  std::vector< std::string > subfield_path;
   const internal::TokenKind kind = internal::classify_token( tok );
   try {
     if ( kind == internal::TokenKind::Qualified ) {
       auto cq = session_.ids.resolve_qualified( tok );
-      if ( !cq ) {
-        std::ostringstream oss;
-        oss << "value from could not resolve qualified token '" << tok << "'";
-        throw_error_at( oss.str(),
-          std::optional< std::string >( "resolution: qualified" )
-        );
+      if ( cq ) {
+        canon = *cq;
       }
-      canon = *cq;
+      else {
+        // Sub-field fallback: find longest canonical prefix
+        auto segs = internal::split_segments( tok );
+        bool found = false;
+        for ( std::size_t n = segs.size(); n >= 1 && !found; --n ) {
+          std::string candidate;
+          for ( std::size_t i = 0; i < n; ++i ) {
+            if ( i > 0 ) candidate += internal::PATH_DELIMITER;
+            candidate += segs[ i ];
+          }
+          if ( session_.ids.has_canonical( candidate ) ) {
+            canon = candidate;
+            for ( std::size_t i = n; i < segs.size(); ++i ) {
+              subfield_path.push_back( segs[ i ] );
+            }
+            found = true;
+          }
+        }
+        if ( !found ) {
+          std::ostringstream oss;
+          oss << "value from could not resolve qualified token '"
+              << tok << "'";
+          throw_error_at( oss.str(),
+            std::optional< std::string >( "resolution: qualified" )
+          );
+        }
+      }
     }
     else if ( kind == internal::TokenKind::Partial ) {
       auto segs = internal::split_segments( tok );
-      canon = session_.ids.resolve_partial_chain( session_.scope_path, segs );
+      // Try full path, then shorter prefixes with sub-field fallback
+      bool resolved = false;
+      for ( std::size_t n = segs.size(); n >= 1 && !resolved; --n ) {
+        std::vector< std::string > prefix_segs(
+            segs.begin(), segs.begin() + static_cast< std::ptrdiff_t >(n) );
+        try {
+          canon = session_.ids.resolve_partial_chain(
+              session_.scope_path, prefix_segs );
+          resolved = true;
+          for ( std::size_t i = n; i < segs.size(); ++i ) {
+            subfield_path.push_back( segs[ i ] );
+          }
+        }
+        catch ( const std::exception& ) {
+          // try shorter prefix
+        }
+      }
+      if ( !resolved ) {
+        // Trigger original error for the full token
+        session_.ids.resolve_partial_chain( session_.scope_path, segs );
+      }
     }
     else {
       canon = session_.ids.resolve_via_ladder( session_.scope_path, tok );
@@ -1095,7 +1139,28 @@ inline yodel::ordered_node yodel::Resolver::materialize_value_from(
     throw_error_at( oss.str(), std::optional< std::string >(hint) );
   }
 
-  ordered_node imported = session_.ids.canonical_nodes.at( canon );
+  if ( subfield_path.empty() ) {
+    imported = session_.ids.canonical_nodes.at( canon );
+  } else {
+    imported = session_.ids.canonical_nodes.at( canon );
+    std::string current_path = canon;
+    for ( const auto& field : subfield_path ) {
+      current_path += internal::PATH_DELIMITER + field;
+      if ( !imported.is_mapping() ) {
+        std::ostringstream oss;
+        oss << "value from: cannot access field '" << field
+            << "' in '" << current_path << "' (not a mapping)";
+        throw_error_at( oss.str() );
+      }
+      if ( !imported.contains( field ) ) {
+        std::ostringstream oss;
+        oss << "value from: field '" << field
+            << "' not found in '" << current_path << "'";
+        throw_error_at( oss.str() );
+      }
+      imported = imported.at( field );
+    }
+  }
 
   if ( required_shape ) {
     const std::string shape = *required_shape;
@@ -1196,6 +1261,7 @@ inline std::unordered_map< std::string, std::string >
 // Performs actual template expansion and Concretize writes
 inline void yodel::Resolver::collect_index_and_concretize() {
 
+  using internal::APPEND;
   using internal::AUTO_ID;
   using internal::BASE;
   using internal::BASE_KEYS;
@@ -1515,7 +1581,7 @@ inline void yodel::Resolver::collect_index_and_concretize() {
             = internal::to_native_checked< std::string >( obj.at(ID) );
           self->session_.ids.register_token( section_scope, tok, obj );
           elem_scope += PATH_DELIMITER + tok;
-        } 
+        }
         else if ( has_uid ) {
           const std::string tok
             = internal::to_native_checked< std::string >( obj.at(AUTO_ID) );
@@ -2081,7 +2147,7 @@ inline void yodel::Resolver::resolve_unified() {
         for ( const auto& [sk, sv] : append_map.map_items() ) {
           const std::string seq_name = sk.get_value< std::string >();
           if ( !sv.is_sequence() ) {
-            throw_error_at( "'" + APPEND + ": " + seq_name
+            self->throw_error_at( "'" + APPEND + ": " + seq_name
               + "' value must be a sequence" );
           }
           if ( !node.contains(seq_name)
@@ -2090,7 +2156,7 @@ inline void yodel::Resolver::resolve_unified() {
             node[ seq_name ] = ordered_node::sequence();
           }
           if ( !node.at(seq_name).is_sequence() ) {
-            throw_error_at( "Cannot " + APPEND + " to '" + seq_name
+            self->throw_error_at( "Cannot " + APPEND + " to '" + seq_name
               + "': target is not a sequence" );
           }
           ordered_node target_seq = node.at( seq_name );
@@ -2105,6 +2171,26 @@ inline void yodel::Resolver::resolve_unified() {
           node[ seq_name ] = internal::make_node_from( new_seq );
         }
       };
+
+      // Resolve value from fields in this mapping
+      {
+        std::unordered_map< std::string, std::string > inherited_ctx
+          = self->session_.root_ctx;
+        for ( const auto& frame : self->session_.ctx_stack ) {
+          for ( const auto& kv : frame ) {
+            inherited_ctx[ kv.first ] = kv.second;
+          }
+        }
+        for ( const auto& [mk, mv] : node.map_items() ) {
+          if ( mv.is_mapping()
+            && mv.contains( internal::VALUE_FROM ) )
+          {
+            const std::string k = mk.get_value< std::string >();
+            node[ k ] = self->materialize_value_from( mv,
+              inherited_ctx, k.c_str(), std::nullopt );
+          }
+        }
+      }
 
       // Apply per-instance and broadcast overrides (if any) keyed by current
       // scope
@@ -2320,6 +2406,7 @@ inline void yodel::Resolver::resolve_unified() {
 
 inline void yodel::Resolver::prune_final() {
 
+  using internal::APPEND;
   using internal::AUTO_LOCAL_PREFIX;
   using internal::LOCALS;
   using internal::LOCALS_KEYS;
